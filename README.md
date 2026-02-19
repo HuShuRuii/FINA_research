@@ -1,88 +1,55 @@
-# 机器学习学习项目
+# Neoclassical Growth Model: Solution Methods
 
-这是一个用于学习机器学习的项目环境。
+This repo presents macroeconomic solutions (variables, policy functions, steady-state) for the neoclassical growth model in several ways.
 
-## 环境配置步骤
+## Task list
 
-### 1. 创建虚拟环境（推荐）
+For the listed models, present solutions in the following ways:
 
-**Windows (PowerShell):**
-```powershell
-python -m venv venv
-.\venv\Scripts\Activate.ps1
-```
+- **(i)** Closed-form: pen-and-paper formulas using first-order conditions  
+- **(ii)** Bellman equations: pen-and-paper formulas using Bellman equations  
+- **(iii)** Numeric policy function iteration  
+- **(iv)** Polynomial policy function iteration  
+- **(v)** One-layer policy function  
+- **(vi)** Multilayer policy function  
+- **(vii)** Policy function that feeds closed-form model parameters/gradients into weight matrix optimization  
 
-**Windows (CMD):**
-```cmd
-python -m venv venv
-venv\Scripts\activate.bat
-```
+---
 
-**macOS/Linux:**
-```bash
-python3 -m venv venv
-source venv/bin/activate
-```
+## What has been done (by method)
 
-### 2. 安装依赖
+**(i) Closed-form**  
+No dedicated file. Closed-form derivations (Euler equation, steady-state \(k^*\), \(c^*\)) are in `closed_form_neoclassical_growth.tex` (and PDF); full policy \(c(k)\) has no closed form in general.
 
-```bash
-pip install -r requirements.txt
-```
+**(ii) Bellman equations**  
+Discrete-time Bellman is stated in `notebooks/growth-pfi.ipynb`. Pen-and-paper Bellman/HJB and steady state are in `closed_form_neoclassical_growth.tex`.
 
-### 3. 配置 Jupyter Notebook（可选）
+**(iii) Numeric policy function iteration**  
+`notebooks/growth-pfi.ipynb` — VFI and Howard policy iteration on a capital grid; \(V(k)\), \(c(k)\), \(k'(k)\), steady state, plots.
 
-如果你想使用 Jupyter Notebook：
+**(iv) Polynomial policy function iteration**  
+`notebooks/growth-proj.ipynb` — (1) Chebyshev projection (HJB residual zero at collocation nodes). (2) Sparse grid (nested Clenshaw–Curtis + spline).
 
-```bash
-python -m ipykernel install --user --name=ml_env
-```
+**(v) One-layer policy function**  
+Not implemented; use `growth-nn.ipynb` with one hidden layer if needed.
 
-### 4. 验证安装
+**(vi) Multilayer policy function**  
+`notebooks/growth-nn.ipynb` — multilayer NN for \(V(k)\), HJB residual minimization, \(c(k)\) from FOC.
 
-运行以下命令验证主要库是否安装成功：
+**(vii) Closed-form in weight optimization**  
+`notebooks/growth-nn.ipynb` — loss uses FOC \(c = (V'(k))^{-1/\gamma}\), HJB equation, and model parameters.
 
-```python
-import numpy as np
-import pandas as pd
-import sklearn
-import matplotlib.pyplot as plt
-import seaborn as sns
+---
 
-print("所有库安装成功！")
-print(f"NumPy版本: {np.__version__}")
-print(f"Pandas版本: {pd.__version__}")
-print(f"Scikit-learn版本: {sklearn.__version__}")
-```
+## Notebooks (short names)
 
-## 项目结构
+| File | Description |
+|------|-------------|
+| `notebooks/growth-pfi.ipynb` | Numeric PFI (VFI + Howard) |
+| `notebooks/growth-proj.ipynb` | Projection (Chebyshev + sparse grid) |
+| `notebooks/growth-nn.ipynb` | Neural network (HJB) |
+| `notebooks/growth-compare.ipynb` | Compare all methods on one grid |
 
-```
-machine_learning_gogogo/
-├── data/              # 数据文件目录
-├── notebooks/         # Jupyter Notebook文件
-├── src/              # 源代码目录
-├── models/           # 保存的模型文件
-├── requirements.txt  # 依赖包列表
-└── README.md         # 项目说明
-```
+## Other files
 
-## 开始学习
-
-1. 在 `notebooks/` 目录中创建你的第一个学习笔记
-2. 在 `data/` 目录中存放数据集
-3. 在 `src/` 目录中编写可重用的代码模块
-
-## 常用命令
-
-- 启动 Jupyter Notebook: `jupyter notebook`
-- 启动 Jupyter Lab: `jupyter lab`
-- 退出虚拟环境: `deactivate`
-
-## 学习资源推荐
-
-- [Scikit-learn 官方文档](https://scikit-learn.org/stable/)
-- [Pandas 官方文档](https://pandas.pydata.org/)
-- [NumPy 官方文档](https://numpy.org/)
-
-祝学习愉快！🚀
+- `closed_form_neoclassical_growth.tex` / `.pdf` — closed-form and Bellman derivations, steady state, and notes on numerical methods.

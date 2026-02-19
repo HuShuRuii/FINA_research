@@ -20,7 +20,7 @@ wheels/
 .installed.cfg
 *.egg
 
-# 虚拟环境
+# Virtual environments
 venv/
 env/
 ENV/
@@ -38,20 +38,20 @@ venv.bak/
 *.swo
 *~
 
-# 数据文件（根据情况取消注释）
+# Data files (uncomment as needed)
 # *.csv
 # *.xlsx
 # *.json
 
-# 模型文件（根据情况取消注释）
+# Model / artifact files (uncomment as needed)
 # *.pkl
 # *.h5
 # *.pt
 # *.pth
 
-# 系统文件
+# System files
 .DS_Store
 Thumbs.db
 
-# 日志文件
+# Logs
 *.log

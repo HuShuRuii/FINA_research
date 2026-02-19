@@ -1,0 +1,201 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{hyperref}
+\usepackage[margin=1in]{geometry}
+
+\title{Neoclassical Growth Model: Closed-Form and Numerical Methods}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Model Setup}
+
+We consider the neoclassical growth model in two forms: discrete time and continuous time. In both cases, there is a single good, capital $k$, consumption $c$, and production $y = f(k) = k^\alpha$ with $\alpha \in (0,1)$. Capital depreciates at rate $\delta \in [0,1]$. The household has CRRA utility
+\begin{equation}
+u(c) = \frac{c^{1-\gamma}}{1-\gamma}, \quad \gamma > 0,\;\gamma \neq 1;\qquad
+u(c) = \ln c \quad \text{if } \gamma = 1.
+\end{equation}
+
+\subsection{Discrete Time}
+
+The resource constraint is
+\begin{equation}
+c_t + k_{t+1} = (1-\delta) k_t + k_t^\alpha.
+\end{equation}
+The household maximizes $\sum_{t=0}^\infty \beta^t u(c_t)$ subject to this constraint and $k_0$ given.
+
+\subsection{Continuous Time}
+
+Capital evolves as $\dot{k} = f(k) - \delta k - c$. The household maximizes $\int_0^\infty e^{-\rho t} u(c(t))\,dt$.
+
+\section{(i) Closed-Form: First-Order Conditions}
+
+\subsection{Discrete time: Euler equation}
+
+The Lagrangian is
+\[
+\mathcal{L} = \sum_{t=0}^\infty \beta^t \left\{ u(c_t) + \lambda_t \bigl[ (1-\delta)k_t + k_t^\alpha - c_t - k_{t+1} \bigr] \right\}.
+\]
+First-order conditions (with respect to $c_t$ and $k_{t+1}$) give
+\begin{align}
+u'(c_t) &= \lambda_t, \\
+\lambda_t &= \beta \lambda_{t+1} \bigl[ 1 - \delta + \alpha k_{t+1}^{\alpha-1} \bigr].
+\end{align}
+Hence the Euler equation:
+\begin{equation}
+\boxed{
+u'(c_t) = \beta\, u'(c_{t+1}) \bigl[ 1 - \delta + \alpha k_{t+1}^{\alpha-1} \bigr].
+}
+\end{equation}
+For CRRA, $u'(c) = c^{-\gamma}$, so
+\begin{equation}
+\frac{c_{t+1}^\gamma}{c_t^\gamma} = \beta \bigl[ 1 - \delta + \alpha k_{t+1}^{\alpha-1} \bigr].
+\end{equation}
+
+\subsection{Steady state (closed form)}
+
+In steady state, $k_{t+1} = k_t = k^*$ and $c_{t+1} = c_t = c^*$. From the Euler equation,
+\[
+1 = \beta \bigl[ 1 - \delta + \alpha (k^*)^{\alpha-1} \bigr],
+\]
+so
+\begin{equation}
+\boxed{
+(k^*)^{\alpha-1} = \frac{1/\beta - 1 + \delta}{\alpha}
+\quad \Rightarrow \quad
+k^* = \left( \frac{\alpha}{1/\beta - 1 + \delta} \right)^{\frac{1}{1-\alpha}}.
+}
+\end{equation}
+From the resource constraint at steady state, $c^* + k^* = (1-\delta)k^* + (k^*)^\alpha$, so
+\begin{equation}
+\boxed{
+c^* = (k^*)^\alpha - \delta k^*.
+}
+\end{equation}
+
+\subsection{Continuous time: FOC and steady state}
+
+The Hamiltonian (current-value) is $H = u(c) + \mu [f(k) - \delta k - c]$. The FOCs give $u'(c) = \mu$ and $\dot{\mu}/\mu = \rho - (f'(k) - \delta)$. So
+\begin{equation}
+\boxed{
+\frac{\dot{c}}{c} = \frac{1}{\gamma}\bigl[ f'(k) - \delta - \rho \bigr]
+= \frac{1}{\gamma}\bigl[ \alpha k^{\alpha-1} - \delta - \rho \bigr].
+}
+\end{equation}
+Steady state $\dot{k} = \dot{c} = 0$ implies $f'(k^*) = \delta + \rho$, i.e.\ $\alpha (k^*)^{\alpha-1} = \delta + \rho$, so
+\begin{equation}
+\boxed{
+k^* = \left( \frac{\alpha}{\delta + \rho} \right)^{\frac{1}{1-\alpha}},
+\qquad
+c^* = (k^*)^\alpha - \delta k^*.
+}
+\end{equation}
+
+\subsection{No closed-form policy function in general}
+
+The Euler equation (discrete or continuous) and the resource constraint define the equilibrium, but they do \emph{not} yield an explicit formula for $c(k)$ or $k'(k)$ as a function of $k$ when $\gamma \neq 1$ and $\delta < 1$. So:
+\begin{quote}
+\emph{The neoclassical growth model does not admit a closed-form solution for the policy function} $c(k)$ \emph{(or} $k'(k)$\emph{) in the general case.}
+\end{quote}
+Numerical methods (value function iteration, projection, neural networks, etc.) are used to approximate the policy.
+
+\paragraph{Special case: log utility and full depreciation.} If $\gamma = 1$ (log utility) and $\delta = 1$, the discrete-time model has a closed-form solution: $c_t = (1 - \beta\alpha) y_t$ and $k_{t+1} = \beta\alpha y_t$, so $c(k) = (1-\beta\alpha) k^\alpha$ and $k'(k) = \beta\alpha k^\alpha$. This is the only common special case with an explicit policy.
+
+\section{(ii) Bellman Equations (Pen-and-Paper)}
+
+\subsection{Discrete time}
+
+The Bellman equation is
+\begin{equation}
+\boxed{
+V(k) = \max_{k'} \left\{ u\bigl( (1-\delta)k + k^\alpha - k' \bigr) + \beta V(k') \right\},
+\quad \text{s.t. } k' \in [k_{\min},\; (1-\delta)k + k^\alpha].
+}
+\end{equation}
+Let $c = (1-\delta)k + k^\alpha - k'$. The first-order condition in $k'$ is
+\[
+-u'(c) + \beta V'(k') = 0 \quad \Rightarrow \quad u'(c) = \beta V'(k').
+\]
+The envelope condition (differentiate the Bellman with respect to $k$ at the optimal $k'$) gives
+\[
+V'(k) = u'(c) \bigl[ 1 - \delta + \alpha k^{\alpha-1} \bigr].
+\]
+Combining: $V'(k) = u'(c)[1-\delta + \alpha k^{\alpha-1}]$ and $u'(c) = \beta V'(k')$. This is the same Euler equation as before. So the Bellman formulation yields the same equilibrium conditions; we still do not get a closed-form $V(k)$ or $c(k)$.
+
+\subsection{Steady state from the Bellman}
+
+At steady state $k' = k = k^*$, the FOC gives $u'(c^*) = \beta V'(k^*)$ and the envelope gives $V'(k^*) = u'(c^*)[1-\delta + \alpha (k^*)^{\alpha-1}]$. Substituting, $1 = \beta [1-\delta + \alpha (k^*)^{\alpha-1}]$, which is the same steady-state condition as in (i). So $k^*$ and $c^*$ are again given by the closed-form expressions above.
+
+\subsection{Continuous time: HJB}
+
+The Hamilton--Jacobi--Bellman equation is
+\begin{equation}
+\boxed{
+\rho V(k) = \max_c \left\{ u(c) + V'(k) \bigl[ f(k) - \delta k - c \bigr] \right\}.
+}
+\end{equation}
+Maximizing in $c$ gives $u'(c) = V'(k)$, so $c = (V'(k))^{-1/\gamma}$ (for CRRA). Substituting back into the HJB yields a nonlinear ODE in $V(k)$. This ODE has no closed-form solution for $V(k)$ or $c(k)$ in general; steady state is again $f'(k^*) = \delta + \rho$, with $k^*$ and $c^*$ as above.
+
+\section{(iii) Numeric Policy Function Iteration}
+
+The state space (capital $k$) is discretized on a grid $k_1 < \cdots < k_n$ over $[k_{\min}, k_{\max}]$. Two standard approaches are used.
+
+\paragraph{Value function iteration (VFI).} Start with an initial guess $V_0(k)$ (e.g. zero). Iterate the Bellman operator:
+\begin{equation}
+V_{j+1}(k_i) = \max_{k' \in \mathcal{F}(k_i)} \left\{ u\bigl( (1-\delta)k_i + k_i^\alpha - k' \bigr) + \beta V_j(k') \right\},
+\end{equation}
+where $\mathcal{F}(k_i)$ is the set of feasible next-period capital values (on the grid). The maximum is taken over grid points. $V_j(k')$ for $k'$ off the grid is obtained by interpolation (e.g. linear). Iterate until $\max_i |V_{j+1}(k_i) - V_j(k_i)| < \epsilon$. The policy $k'(k)$ is the maximizer at each grid point; $c(k) = (1-\delta)k + k^\alpha - k'(k)$.
+
+\paragraph{Howard policy iteration.} (1) Given a policy $k'(k)$ (e.g. from one VFI step), solve for the value function that satisfies $V(k) = u(c(k)) + \beta V(k'(k))$ (policy evaluation: a linear system or fixed-point iteration). (2) Update the policy by one-step maximization: $k'_{\mathrm{new}}(k) = \arg\max_{k'} \{ u((1-\delta)k + k^\alpha - k') + \beta V(k') \}$ (policy improvement). Repeat until the policy is unchanged. Typically converges in fewer outer iterations than VFI.
+
+Steady state is either computed analytically from the formulas in Section~(i) or found numerically as the point where $k'(k^*) = k^*$.
+
+\section{(iv) Polynomial Policy Function Iteration}
+
+The value function (or policy) is approximated by a finite linear combination of basis functions. Coefficients are chosen so that the model equations hold at a set of nodes.
+
+\paragraph{Chebyshev collocation.} Approximate $V(k) \approx \sum_{j=0}^N c_j T_j(x(k))$, where $T_j$ are Chebyshev polynomials and $x(k) \in [-1,1]$ is a linear map of $k \in [k_{\min}, k_{\max}]$. Choose collocation nodes (e.g. Chebyshev nodes) $k_1,\ldots,k_{N+1}$. Impose that the HJB residual is zero at these nodes: for each $i$,
+\[
+\rho \widehat{V}(k_i) = u(\widehat{c}(k_i)) + \widehat{V}'(k_i) \bigl[ f(k_i) - \delta k_i - \widehat{c}(k_i) \bigr],
+\]
+where $\widehat{c}(k) = (V'(k))^{-1/\gamma}$ from the FOC. This gives $N+1$ equations in the $N+1$ coefficients. Solve (e.g. with a nonlinear solver) for the coefficients. The result is a smooth approximation to $V(k)$ and $c(k)$.
+
+\paragraph{Sparse grid.} In higher dimensions, a full tensor grid is expensive. A sparse grid (e.g. Smolyak) uses a hierarchical set of points and basis functions so that the number of nodes grows more slowly with dimension. In 1D, a level-$\ell$ sparse grid may use nested Clenshaw--Curtis points. The same collocation idea applies: set the residual to zero at the sparse grid points and solve for the coefficients.
+
+\section{(v) One-Layer Policy Function}
+
+The policy (e.g. consumption $c(k)$ or next-period capital $k'(k)$) is approximated by a \emph{single} hidden layer:
+\[
+c(k) \approx \psi\bigl( w_0 + \textstyle\sum_{j=1}^H w_j \, \phi(a_j k + b_j) \bigr),
+\]
+where $\phi$ is an activation function (e.g. $\tanh$), $H$ is the number of hidden units, and $\psi$ maps to positive consumption. The weights $(w_j, a_j, b_j)$ are chosen by minimizing a loss, e.g.\ the squared Bellman residual or the squared Euler residual, over a sample of states $k$. This is a shallow network; capacity is limited compared to deep nets.
+
+\section{(vi) Multilayer Policy Function}
+
+The value function or policy is approximated by a \emph{multi-layer} (deep) neural network. For example, $V(k) \approx \mathrm{Net}(k; \theta)$ with several hidden layers (e.g. $k \to \mathrm{Linear} \to \tanh \to \mathrm{Linear} \to \tanh \to \cdots \to \mathrm{Linear} \to V$). The optimal consumption is then obtained from the FOC: $c(k) = (V'(k))^{-1/\gamma}$, where $V'(k)$ is computed by automatic differentiation. Training minimizes a loss such as the mean squared HJB residual over sampled $k$. Deeper and wider networks can approximate more complex policies at the cost of more parameters and data.
+
+\section{(vii) Policy with Closed-Form Parameters and Gradients in Weights}
+
+Here the \emph{analytical structure} of the model is fed directly into the training of the approximator. For example:
+\begin{itemize}
+\item The loss uses the \emph{closed-form} FOC: $c = (V'(k))^{-1/\gamma}$, so consumption is not a free output of the network but is derived from the value function gradient. The HJB residual $\rho V - u(c) - V'(k)(f(k)-\delta k - c)$ is then a function of $k$ and the network weights only.
+\item The loss may include terms that involve $u'(c)$, $V'(k)$, or the Euler residual, all computed from the model formulas (and autograd for $V'(k)$).
+\item Model parameters ($\alpha$, $\delta$, $\gamma$, $\rho$) appear explicitly in the loss; the optimizer updates only the weight matrix of the network so that the HJB (or Euler) equation is satisfied as well as possible.
+\end{itemize}
+This way the neural network is constrained by the economic first-order conditions rather than learning a black-box mapping; often this improves accuracy and interpretability.
+
+\section{Summary}
+
+\begin{itemize}
+\item \textbf{(i) Closed-form (FOC):} Euler equation and steady-state $k^*$, $c^*$ are explicit; the policy $c(k)$ is not available in closed form (except for $\gamma=1$, $\delta=1$ in discrete time).
+\item \textbf{(ii) Bellman:} Bellman/HJB equations and FOC/envelope conditions are written in closed form; they imply the same Euler and steady state. $V(k)$ and $c(k)$ have no general closed-form solution.
+\item \textbf{(iii) Numeric PFI:} Discretize the state on a grid; iterate the Bellman operator (VFI) or alternate policy evaluation and improvement (Howard) to get numerical $V(k)$, $c(k)$, $k'(k)$ and steady state.
+\item \textbf{(iv) Polynomial PFI:} Approximate $V(k)$ with Chebyshev (or other) polynomials; set the HJB residual to zero at collocation nodes (or use a sparse grid in higher dimensions). Yields smooth approximations.
+\item \textbf{(v) One-layer:} Approximate the policy with a single hidden layer; train by minimizing Bellman or Euler residual over states.
+\item \textbf{(vi) Multilayer:} Approximate $V(k)$ or $c(k)$ with a deep network; train by minimizing HJB residual; derive $c$ from $V'$ via FOC.
+\item \textbf{(vii) Closed-form in weights:} Use model FOCs and parameters explicitly in the loss (e.g. $c = (V'(k))^{-1/\gamma}$, HJB residual); optimize only the network weights so the model equations are satisfied.
+\end{itemize}
+
+\end{document}
