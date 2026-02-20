@@ -50,6 +50,31 @@ Not implemented; use `growth-nn.ipynb` with one hidden layer if needed.
 | `notebooks/growth-nn.ipynb` | Neural network (HJB) |
 | `notebooks/growth-compare.ipynb` | Compare all methods on one grid |
 
+## Running the notebooks (higher-density grids)
+
+Grids and training are set for **more precise** numerical solutions:
+
+- **growth-pfi**: capital grid `n_k = 600` (was 200)
+- **growth-proj**: Chebyshev degree 12, sparse grid level 6, fine grid 500 points
+- **growth-nn**: 2000 epochs, 5000 samples per iteration
+- **growth-compare**: same densities; comparison grid 600 points, NN 1500 epochs
+
+Run under the `.venv` environment:
+
+```bash
+# Activate venv then run all notebooks (execute and save outputs)
+source .venv/bin/activate   # or: .venv\Scripts\activate on Windows
+mkdir -p .jupyter
+export JUPYTER_CONFIG_DIR=".jupyter" JUPYTER_DATA_DIR=".jupyter/data"
+jupyter nbconvert --execute --to notebook --inplace notebooks/growth-pfi.ipynb
+jupyter nbconvert --execute --to notebook --inplace notebooks/growth-proj.ipynb
+jupyter nbconvert --execute --to notebook --inplace notebooks/growth-nn.ipynb
+jupyter nbconvert --execute --to notebook --inplace notebooks/growth-compare.ipynb
+```
+
+Or open and run in Jupyter Lab: `jupyter lab notebooks/`.  
+**Note:** With `n_k=600`, VFI in growth-pfi and growth-compare can take ~10–15 minutes each.
+
 ## Other files
 
 - `closed_form_neoclassical_growth.tex` / `.pdf` — closed-form and Bellman derivations, steady state, and notes on numerical methods.

@@ -55,3 +55,17 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Document files: keep .pdf, .docx, .tex (source); ignore LaTeX build artifacts
+*.aux
+*.out
+*.toc
+*.bbl
+*.blg
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.nav
+*.snm
+*.vrb
+*.run.xml
