@@ -1,0 +1,3812 @@
+Structural Reinforcement Learning
+for Heterogeneous Agent Macroeconomics
+Yucheng Yang∗,1
+
+Chiyuan Wang∗,2
+
+Andreas Schaab3
+
+Benjamin Moll4
+
+Preliminary
+First version: December 2025
+This version: December 2025
+[latest version]
+
+Abstract
+We present a new approach to formulating and solving heterogeneous agent models with aggregate risk. We replace the cross-sectional distribution with low-dimensional
+prices as state variables and let agents learn equilibrium price dynamics directly from simulated paths. To do so, we introduce a structural reinforcement learning (SRL) method which
+treats prices via simulation while exploiting agents’ structural knowledge of their own individual dynamics. Our SRL method yields a general and highly efficient global solution
+method for heterogeneous agent models that sidesteps the Master equation and handles
+models traditional methods struggle with, like those with nontrivial market-clearing conditions. We illustrate the approach in the Krusell-Smith model, the Huggett model with
+aggregate shocks, and a HANK model with a forward-looking Phillips curve, all of which
+we solve globally within minutes.
+
+We thank Jesús Fernández-Villaverde, Jakob Foerster, Felix Kübler, Dima Mukhin, Richard Rogerson, Tom
+Sargent, Bo Li, Sebastian Towers, Gianluca Violante, Clarisse Wibault, Tiphaine Wibault, Zhuoran Yang, and many
+seminar participants for helpful comments. Yang acknowledges support from the Swiss NSF (#10003091), Wang
+acknowledges support from the NSFC (#72450002), Moll acknowledges support from the Leverhulme Trust and
+the European Research Council (#101200645). We will release codes implementing our computational experiments
+as soon as possible.
+* Equal contribution.
+1 University of Zurich and SFI. Email: yucheng.yang@uzh.ch
+2 Peking University, School of Computer Science and BIGAI. Email: wang2021@stu.pku.edu.cn
+3 UC Berkeley. Email: schaab@berkeley.edu
+4 London School of Economics, corresponding author. Email: b.moll@lse.ac.uk
+
+1
+
+Introduction
+
+Many of the most important questions in macroeconomics call for studying models with heterogeneous agents and aggregate risk. A well-known difficulty is that, in standard recursive
+rational-expectations formulations of such models, the cross-sectional distribution of agents
+becomes a state variable in the Bellman equation characterizing agents’ decision problems –
+the “Master equation.”1 This difficulty arises even though agents do not directly “care about”
+the distribution, i.e. it does not enter their objective functions; instead, as is standard in competitive equilibrium models, they only care about prices. Intuitively, low-dimensional equilibrium prices do not follow a Markov process but the extremely high-dimensional distribution
+does. Therefore, agents with rational expectations forecast prices by forecasting distributions.
+While the recent literature has made some impressive advances, the extreme curse of dimensionality inherent in the Master equation remains a central computational bottleneck for
+global solutions to heterogeneous agent models with aggregate risk.2 Even seemingly simple
+model environments like a Huggett (1993) model with aggregate risk (in which there is a nontrivial market clearing condition) or a one-asset HANK model with a forward-looking Phillips
+curve lead to exceedingly difficult computational problems. This lack of a general and efficient global solution method limits the applicability of heterogeneous-agent macroeconomics,
+in particular to questions in which aggregate non-linearities play a key role.3
+The contribution of this paper is to develop an approach that sidesteps the Master equation
+by using ideas from reinforcement learning (RL). RL means learning value or policy functions
+of incompletely-known Markov decision processes via some form of Monte Carlo simulation
+(Sutton and Barto, 2018). We apply this idea to equilibrium prices and let agents compute price
+expectations directly from simulated paths. However, our approach differs from standard
+RL in that we assume that agents have structural knowledge about the dynamics of their own
+individual states (e.g. their budget constraint and idiosyncratic income process). We term this
+hybrid approach structural reinforcement learning (SRL) and our specific algorithm a structural
+policy gradient (SPG) algorithm.4 By imposing that policy functions depend only on current
+prices (or a short price history) we keep the state space low-dimensional so that we can work
+with a grid-based (tabular) approach rather than deep neural networks. Finally, we provide an
+efficient implementation in JAX (Bradbury et al., 2018; Sargent and Stachurski, 2025) that can
+be run on Google Colab.5
+SRL delivers a new and highly efficient global solution method for heterogeneous agent
+models with aggregate risk. Importantly, it solves problems traditional methods struggle with.
+We demonstrate this with two example applications. First, a model environment with a non1 See, e.g., Den Haan (1996), Krusell and Smith (1998), Schaab (2020), and Bilal (2023). The name “Master
+equation” comes from the mathematics literature on Mean Field Games (Cardaliaguet et al., 2019).
+2 There is, of course, also the global solution method of Krusell and Smith (1998) and Den Haan (1996) which
+assumes that agents forecast prices by forecasting moments of cross-sectional distributions rather than the distributions themselves. We discuss similarities and differences to our approach further below.
+3 While we do not consider such models in the present draft, we think that one particularly promising application of our global solution method will be modeling infrequent but large boom-bust cycles like financial crises.
+4 The “structural” in SRL is analogous to that in structural vector autoregressions (SVARs).
+5 Google Colab is a cloud computing platform that is easily accessible to all researchers.
+
+1
+
+trivial market-clearing conditions, namely a Huggett (1993) model with aggregate risk. Second, a HANK model with a forward-looking Phillips curve. Both model environments have
+proven notoriously difficult for traditional methods.6 We instead solve the Huggett model in
+around one minute and the HANK model in around three minutes.7 For completeness, we
+also solve the easier Krusell and Smith (1998) model in around 55 seconds.
+Almost all existing global solution methods for heterogeneous agent models use dynamic
+programming. They either use dynamic programming to directly tackle the high-dimensional
+Master equation with the distribution as state variable; or, as in Krusell and Smith (1998), they
+use model-generated data to estimate a low-dimensional Markovian “perceived law of motion” (PLM) for moments of the distribution and then apply dynamic programming to this
+lower-dimensional approximate problem.8 Our SPG algorithm instead works directly with
+the sequential formulation of the problem and never attempts to force it into the standard
+Markovian structure required for applying dynamic programming. While we reduce the dimensionality of the state space in a fashion reminiscent of moment-based methods, we never
+estimate a PLM. Instead, we use the simple idea at the core of all RL methods that value functions are expected values – here, expected discounted lifetime utilities – and can therefore be
+approximated by averaging across simulated trajectories. We then find the low-dimensional
+policy function that maximizes expected lifetime utility using stochastic gradient ascent.
+The key elements of our SPG method delivering fast computations even in challenging
+model environments are as follows. Most importantly, as already mentioned, we replace the
+cross-sectional distribution with low-dimensional prices as state variables. We do this in two
+steps. The first step is to impose that agents observe the history of equilibrium prices but not
+the cross-sectional distribution. By the Wold representation theorem, this assumption does
+not, by itself, imply any departure from full information rational expectations. In the second
+step, we restrict the agents’ state space: we assume that their policy functions depend only on
+current prices or, perhaps, a short price history. This second assumption means that we do
+not solve for the model’s rational-expectations equilibrium; instead, we solve for a restricted
+perceptions equilibrium (RPE) in the sense of Sargent (1991), Evans and Honkapohja (2001),
+or Branch (2006): while agents’ expectations are restricted, they are nevertheless statistically
+consistent with actual equilibrium outcomes, thereby fulfilling one of the desiderata of rational
+expectations.
+The next key element delivering fast computations is the defining assumption of our SPG
+approach that agents have structural knowledge about the dynamics of their own individual
+6 There is an interesting historical note regarding the computational difficulty of the Huggett model with aggregate risk. According to Maliar and Maliar (2020), in the influential JEDC special issue on numerical solution
+methods for HA models with aggregate risk (Den Haan et al., 2010), all participants were initially asked to solve
+two benchmark models globally – the Krusell and Smith (1998) model and the Huggett (1993) model with aggregate
+shocks (Maliar and Maliar call this “the HANC model with savings through bonds”). However, as they report, no
+single team was able to successfully solve the latter model, and it was ultimately dropped from the JEDC project.
+7 All experiments are implemented in JAX and are run on a single NVIDIA A100 GPU on Google Colab. We
+will discuss the precise convergence criteria in Section 3.7.
+8 The PLM is simply an approximate Markov process for the low-dimensional vector of moments. The PLM
+may have a simple parametric (e.g. linear) functional form as in Krusell and Smith (1998) or it may be a general,
+non-linear function, e.g. parameterized by a neural network as in Fernández-Villaverde et al. (2023).
+
+2
+
+states. In contrast to standard policy gradient methods which estimate approximate policy gradients, this assumption allows us to compute exact policy gradients by differentiating through
+these individual dynamics. The only part of the environment that is treated as unknown is the
+process for general-equilibrium prices and aggregate shocks, which is learned from simulated
+data. Specifically, our SPG method discretizes the individual state space so that agents’ individual states evolve according to a known transition matrix Aπ where π denotes the vector
+of individual policies. When computing policy gradients of lifetime utilities with respect to
+π, we exploit this structural knowledge and differentiate through Aπ while using simulation
+only for prices and aggregate shocks.
+Finally, our low-dimensional grid- and price-based policy functions allow us to (globally)
+simulate the economy forward in time in a very efficient manner. For any particular trajectory of aggregate shocks, we update the distribution using the “histogram method” of Young
+(2010). The fact that policy functions depend on current prices allows us to efficiently handle
+non-trivial market clearing conditions like in Huggett (1993). Intuitively, policy functions double
+as individual supply schedules. Integrating across the distribution to obtain the corresponding
+aggregate supply schedule, it is then straightforward to solve for equilibrium prices at each
+point in time along a simulation path. Our treatment of market clearing mirrors the RL literature’s distinction between agents and environment: agents can interact with their environment
+under any given policy including suboptimal ones; finding optimal policies is conceptually
+separate. In line with this dichotomy, we treat market clearing as part of the environment and
+find equilibrium prices also for suboptimal policies. This approach differs from standard practice in macroeconomics which first finds optimal policies given prices in an inner loop and
+then finds equilibrium prices in an outer loop.
+In summary, SRL enables efficient global solutions of heterogeneous-agent models with full
+cross-sectional distributions. Importantly, while our restricted state space (and use of an RPE)
+simplifies agents’ decision problems inside the model, it does not diminish the rich dynamics of
+the economy which still evolves stochastically and non-linearly, driven by the policy functions
+of forward-looking heterogeneous agents.
+We illustrate our method in three benchmark environments: a Huggett (1993) economy,
+the classic Krusell and Smith (1998) model, and a one-account heterogeneous agent New Keynesian (HANK) model with sticky prices. In all three cases, our price-based SRL algorithm
+converges quickly on modern hardware: solving the Krusell-Smith model takes 55 seconds
+while the Huggett and HANK models – typically viewed as more challenging because of
+their non-trivial market-clearing conditions and, in the HANK case, a forward-looking Phillips
+curve – take only modestly longer (about 75 seconds and roughly 3 minutes, respectively). We
+present extensive tests to verify the accuracy of our solutions. For the Krusell-Smith model, our
+method produces equilibrium dynamics that closely match the rational expectations obtained
+using deep-learning-based methods. As a complementary exercise, we extend the information
+set to allow agents to condition on lagged prices and show that this richer price history does
+not meaningfully change the solution, suggesting that current prices already contain most of
+the information that matters for behavior. Finally, in the HANK application we show how to
+
+3
+
+use our approach to solve the household and firm problems jointly, using the same SPG algorithm not only for consumption-saving decisions but also for the forward-looking price-setting
+problem of firms.
+Relation to Economics Literature. A huge theoretical and quantitative literature studies environments in which heterogeneous households are subject to uninsurable idiosyncratic shocks.
+See Krusell and Smith (2006), Heathcote et al. (2009), Quadrini and Rı́os-Rull (2015), Krueger
+et al. (2016), Sargent (2023), and Auclert et al. (2025a) for surveys.
+Within this literature, a sizable subliterature is concerned with the global solution of heterogeneous agent models with aggregate risk. A first strand of the literature tackles the Master
+equation directly, typically using deep neural networks – see e.g. Han et al. (2021), Maliar et
+al. (2021), Azinovic et al. (2022), Kahou et al. (2021), Duarte et al. (2024), Huang (2023), Kase et
+al. (2024), Gu et al. (2024), Payne et al. (2024), and Gopalakrishna et al. (2024). Our approach
+differs from all of these papers in that we sidestep the Master equation rather than attempting
+to “tame the curse of dimensionality” inherent in it. Among these papers, Han et al. (2021)
+is most related to and influential for our work: like them, we learn value and policy functions of heterogeneous agents via simulation; also like them, we take advantage of agents’
+structural knowledge of their own individual dynamics – what we have termed a “structural”
+RL approach. The key difference is that Han et al. (2021) include the high-dimensional crosssectional distribution in the agents’ state space whereas we replace this distribution with lowdimensional prices as state variables.
+A second strand of the literature estimates a low-dimensional Markovian PLM for moments of the distribution and then applies dynamic programming as in Krusell and Smith
+(1998) and Den Haan (1996). Similar to us, this approach sidesteps the Master equation by
+working with a low-dimensional state space that does not include the distribution. One variant of this approach formulates PLMs directly in terms of equilibrium prices so that – like
+in our approach – this low-dimensional state space includes prices.9 However, this approach
+introduces an additional fixed-point loop in which the perceived law of motion is repeatedly
+updated and the associated dynamic programming problem re-solved, a procedure that is
+computationally slow in many economically interesting environments, particularly those with
+non-trivial market-clearing conditions. By contrast, we work directly with the problem’s sequential formulation and never estimate a PLM.
+Our approach is also related to the adaptive learning literature (e.g. Bray, 1982; Marcet and
+Sargent, 1989; Evans and Honkapohja, 2001). Jacobson (2025) and Giusto (2014) apply adaptive learning in heterogeneous agent models with aggregate risk. RL and adaptive learning are
+linked because both are special cases of a more general set of stochastic approximation methods (Robbins and Monro, 1951). Similar to the learning literature, our approach computes an
+equilibrium that is “self-confirming” (Sargent, 1999; Cho and Sargent, 2016).10 But because
+9 See for example Lee and Wolpin (2006), Storesletten et al. (2007), Gomes and Michaelides (2008), Favilukis et
+al. (2017), Llull (2018), Kaplan et al. (2020), and Fernández-Villaverde et al. (2024b).
+10 Agents form price expectations from data generated by the economy in which they live. Their expectations
+are therefore statistically consistent with actual equilibrium outcomes but may be incorrect for events that are
+
+4
+
+we restrict the individual state space to not include the distribution, our self-confirming equilibrium is an RPE (Sargent, 1991; Branch, 2006). In the language of Guarda (2025), our RPE
+features expectations that are both “narrow” and “short”: narrow because they do not condition on the distribution and short because they do not condition on a long price history.11
+Our focus on a low-dimensional vector of equilibrium variables links SRL to the “sequence
+space” approach of Auclert et al. (2021) and Auclert et al. (2025b). The difference is that SRL
+handles stochastic price sequences outside steady-state neighborhoods. By using Monte Carlo
+simulation, it yields a global rather than local solution method in sequence space.12
+To be clear, we do not view SRL as an empirically realistic model of human learning.13 Instead, it is an efficient computational method for finding RPEs in heterogeneous agent models
+with aggregate risk. Nevertheless, as we note in the conclusion, the core idea of our approach –
+agents forming expectations about equilibrium prices by sampling – could, in principle, serve
+as a building block for an empirical theory of expectations formation in macroeconomics.
+Relation to RL Literature.
+
+Our approach connects to several central ideas in the RL literature.
+
+As already mentioned, in RL, agents learn optimal policies in Markov decision processes using
+sampled trajectories (Sutton and Barto, 2018). RL is at the core of some impressive advances
+in artificial intelligence, e.g. RL agents learning to play Go and Atari games better than humans (Mnih et al., 2015; Silver et al., 2016, 2017) or post-training of “reasoning” large language
+models (LLMs OpenAI, 2024; DeepSeek-AI, 2025).14
+Conceptually, our SRL method adopts the RL principle of optimizing policies using Monte
+Carlo estimates of expected returns. But it exploits full structural knowledge of each agent’s
+reward function and individual transition dynamics to compute exact end-to-end policy gradients. Only equilibrium objects are treated as unknown parts of the environment. In this
+sense, our SRL approach sits between model-based and model-free RL: we differentiate exactly through the known micro-level transition probabilities while learning the induced macro
+environment from simulation. Also see Han et al. (2021).
+While classical RL demonstrates considerable power in solving complex environments, its
+general-purpose nature implies suboptimal performance in specialized domains. For instance,
+when applied to the computationally intensive post-training phase of LLMs, classical RL algorithms introduce substantial overhead. To address this, Rafailov et al. (2024) reformulated RL
+infrequently observed (e.g. events off the equilibrium path).
+11 Our notion of equilibrium is also closely related to Guarda’s nonparametric restricted perceptions equilibrium
+(NRPE). The difference is that Guarda defines his NRPE recursively and uses dynamic programming whereas our
+formulation is sequential.
+12 Recent work has explored global solution methods in sequence space using high-dimensional approximation
+techniques, e.g., Azinovic-Yang and Žemlička (2025).
+13 Moll (2025) proposed three criteria for alternatives to rational expectation in heterogeneous agent models: (1)
+computational tractability, (2) consistency with empirical evidence, and (3) (some) immunity to the Lucas critique.
+Our SRL approach delivers on (1) and (3) but not (2).
+14 RL ideas have also been applied in economics. Besides Han et al. (2021), see for example Barberis and Jin
+(2023), Chen et al. (2023), de la Barrera and de Silva (2024), Calvano et al. (2020), Dou et al. (2025), and the references in Fernández-Villaverde et al. (2024a) for applications in finance and macroeconomics. RL ideas have also
+been applied in game theory (e.g. Erev and Roth, 1995, 1998; Fudenberg and Levine, 2016) but using a different
+formulation that does not work with value functions and instead directly reinforces the “propensities” of choosing
+strategies.
+
+5
+
+from human feedback (RLHF) as a deep learning problem and proposed the Direct Preference
+Optimization (DPO) algorithm, which significantly reduces computational cost and enhances
+training stability. Similarly, Hu et al. (2020) and Freeman et al. (2021) introduced differentiable physics engines – DiffTaichi and Brax (the latter also implemented using JAX) – that
+enable gradient computation directly from built-in physical equations.15 This allows policy
+updates via exact gradient methods, eliminating the need for sampling-based approximations
+and thereby improving both accuracy and efficiency. In Brax, this method is termed “analytical
+policy gradient,” which shares conceptual foundations with our SRL framework.
+Heterogeneous-agent models in macroeconomics can be viewed as a special case of the
+more general Mean Field Games (MFGs) studied in the mathematics literature (e.g. Lasry and
+Lions, 2007; Cardaliaguet et al., 2019). In the RL literature, the work closest to ours is therefore
+the line of research that applies RL methods to solve MFGs (e.g. Yang et al., 2018; Laurière et
+al., 2022, 2024; Xu et al., 2023; Wu et al., 2025). With the exception of Wu et al. (2025), none
+of these papers study the case with aggregate risk (or “common noise” in MFG terminology)
+considered here. More importantly, none of the papers applying RL to MFGs exploit the structural knowledge of agents’ individual dynamics. Specifically, they do not exploit the transition
+matrix (or infinitesimal generator) for individual states Aπ and its known dependence on the
+policy π, even though this matrix (operator) is typically available and even used for updating
+the distribution.16
+In order to sidestep the Master equation and keep the state space manageable, we assume
+a form of partial observability: agents do not observe the high-dimensional distribution which
+is the system’s underlying Markov state and instead observe low-dimensional prices. That
+being said, a similar SRL approach can also be applied to fully observable MFGs as in Han et
+al. (2021).
+Roadmap. Section 2 describes the SRL method and Section 3 reports our computational
+experiments. Section 4 concludes.
+
+2
+
+Sidestepping the Master Equation via Structural Reinforcement
+Learning
+
+This section describes our SRL method. Rather than solving the Master equation (11) with
+the full cross-sectional distribution as a state variable, we work with a low-dimensional state
+consisting of prices pt (and the aggregate shock zt ). We adapt RL ideas to let agents learn
+10
+
+optimal behavior from simulated equilibrium data, taking (st , zt , pt ) as their state. In contrast
+to standard RL, our SRL method exploits agents’ structural knowledge of their own individual
+dynamics.
+
+3.1
+
+The Key Idea of Reinforcement Learning: Monte Carlo instead of Bellman
+Equations
+
+Before proceeding, we briefly summarize the basic ideas of RL.17 RL means learning value or
+policy functions of incompletely-known Markov decision processes via some form of Monte
+Carlo simulation. The key problem addressed by RL is: what to do in dynamic optimization
+problems in which the agent does not know the exact environment she is operating in, specifically the stochastic process for the underlying state variables? The key insight of RL is that, in
+such environments, one can still approximate optimal value and policy functions as long as one
+can simulate.
+A simple analogy is how to compute the expected value E[ x ] of a random variable x. The
+R
+standard way is to compute E[ x ] = x f ( x )dx for a known probability distribution f ( x ). But
+what if f is unknown? In such cases, one can often still sample from f and approximate the
+expected value E[ x ] with the sample mean x̄ = N1 ∑nN=1 xn .
+Building on this intuition, consider the question of how to calculate the following value
+function:
+
+"
+v0 = E
+
+∞
+
+#
+
+∑ β u( pt ) ,
+t
+
+t =0
+
+where u is a utility function and pt is some exogenous stochastic process. The standard approach is to use dynamic programming: assume that pt is Markov with known transition
+probabilities f ( p0 | p); then write and solve the Bellman equation
+v( p) = u( p) + β
+
+Z
+
+v( p0 ) f ( p0 | p)dp0 .
+
+An alternative approach is to use Monte Carlo simulation: simply sample N trajectories { pnt }Tt=0
+for n = 1, ..., N and approximate the expected value v0 as
+v0 ≈ vb0 =
+
+1 N T t
+∑ β u( pnt ).
+N n∑
+=1 t =0
+
+This basic idea – to compute expected values via simulation – lies at the heart of all RL algorithms. Crucially this simulation-based approach does not require knowledge of the transition
+probabilities f . It also works directly with the sequential formulation of the problem. In particular, it is unnecessary to force the problem into the standard Markovian structure required
+for applying dynamic programming, e.g. by estimating a perceived law of motion for prices
+pt . As we explain next, our SRL approach to heterogeneous agent macroeconomics uses this
+same approach to compute expectations about equilibrium prices.
+17 See Sutton and Barto (2018) and Zhao (2025) for brilliant textbook treatments. Also see Murphy (2025) and
+
+Silver (2015).
+
+11
+
+3.2
+
+Revisiting the Agents’ Decision Problem
+
+Recall that agents choose {ci,t } to solve
+vi,0 = max E
+{ci,t }
+
+ ∞
+
+∑ β u(ci,t )
+t
+
+
+s.t.
+
+si,t+1 ∼ Ts (· | si,t , ci,t , zt , pt ),
+
+pt = P∗ ( Gt , zt ).
+
+(12)
+
+t =0
+
+We begin by specifying what individuals observe and on what they condition their decisions.
+Assumption 1 (Information). At date t, an individual observes the entire history of aggregate prices
+
+{ pt , pt−1 , . . .}, but not the cross-sectional distribution gt .
+Assumption 1 rules out direct conditioning on the distribution but does not, by itself, imply
+any departure from full information rational expectations. Under standard regularity conditions, a stationary price process { pt } admits a Wold representation and can be written as an
+infinite-order vector moving average process
+∞
+
+pt = ∑ κ j ε t− j ,
+j =0
+
+for some coefficients {κ j } and white-noise innovations ε t . Under additional restrictions (invertibility), the stationary price process also has an equivalent VAR(∞) representation,
+
+p t +1 ∼ T p · p t , p t −1 , p t −2 , . . . ,
+so that the infinite history of prices is sufficient for forecasting under rational expectations. In
+this sense, the price history is rich enough to recover all information that is relevant to the
+agents, even though they never observe the cross-sectional distribution directly. Note that the
+Wold representation theorem effectively converts the recursive formulation for the price process (10) into a sequential stochastic process. It is also worth pointing out that, in the language
+of the RL literature, Assumption 1 is a “partial observability” assumption.
+Of course, working with the infinite price history is infeasible in practice. Instead, starting from the rational expectations benchmark in Assumption 1, we restrict attention to lowdimensional summaries of this history. We begin with the most restrictive case, in which agents
+condition only on current prices.
+Assumption 2 (Restricted state space). Agents’ decision rules (policy functions) take the form
+π ( s t , z t , p t ),
+so that policies do not depend on lagged prices.18
+18 Whether z
+
+t is payoff-relevant depends on the particular application. If, conditional on ( st , pt ), zt affects neither
+current payoffs nor individual transitions, then it can be dropped from the state vector for the individual’s decision
+problem. For example, zt is directly payoff-relevant in the Huggett model because it scales current
+income yi,t zt . By contrast, in our Krusell-Smith and HANK applications in Sections 4.2 and 4.3, zt matters for
+individuals only through equilibrium prices, so policies could equivalently be written as π (st , pt ). For notational
+uniformity we keep zt in π (st , zt , pt ), but in these cases it is redundant from the household’s point of view.
+
+12
+
+Assumption 2 imposes a particular restriction on perceptions: agents treat the current price
+vector as a sufficient statistic for decision making, even though in the true equilibrium the
+price process is not Markov in pt alone. Within this class of policies we then solve problem (12)
+by optimizing over many simulated equilibrium paths.
+In Section 4.1 we relax Assumption 2 and allow policies to depend on a short history of
+past prices. More generally, one could let the policy depend on the hidden state of a recurrent
+neural network that summarizes the price history; this fits directly into the same RL-based
+framework (Hausknecht and Stone, 2017).
+Given any (possibly suboptimal) policy π (s, z, p), the discretization of individual states on
+a finite grid s ∈ {s1 , . . . , s J } allows us to write the policy in vector form
+
+
+
+π (s1 , z, p)
+
+
+..
+.
+π (z, p) = 
+.
+
+
+π (s J , z, p)
+We represent the cross-sectional distribution as a vector gt , and the individual
+transitions induced by the policy are encoded in a sparse transition matrix Aπ (z,p) .
+
+3.3
+
+Sequential Restricted Perceptions Equilibrium
+
+Under Assumptions 1 and 2, an individual’s relevant state is simply (st , zt , pt ). Given this
+restricted state space, we define equilibrium as a variant of a restricted perceptions equilibrium
+(RPE) in the sense of Sargent (1991) and Branch (2006). Because we work directly with the
+sequential formulation of the agents’ problem, we term it a “sequential RPE”.
+Definition 1 (Sequential restricted perceptions equilibrium). A sequential restricted perceptions
+equilibrium consists of a pair of mappings (π ∗ (s, z, p), P∗ (g, z)) such that:
+1. Optimality. Given a stochastic process {zt }t≥0 as well as a price process { pt }t≥0 generated by
+pt = P∗ (gt , zt ), the policy π ∗ = {c∗ , b0∗ } ∈ Π solves
+max E
+π ∈Π
+
+ ∞
+
+∑ β u(c(st , zt , pt ))
+t
+
+
+s.t.
+
+st+1 ∼ Ts (· | st , π (st , zt , pt ), zt , pt ),
+
+t =0
+
+where c(s, z, p) is the consumption component of π (s, z, p). Here Π denotes the set of measurable
+policies π : S × Z × P → C × B that satisfy the budget and borrowing constraints.
+2. Market clearing. For every t, the market clearing conditions hold: in the Huggett model
+Z
+
+b0 (s, zt , pt ) dGt (s) = 0,
+
+(13)
+
+where b0 (s, z, p) is the saving component of π (s, z, p). The solution is a mapping pt = P∗ (gt , zt ).
+3. Consistency. When all agents follow π ∗ , the cross-sectional distribution evolves according to
+gt+1 = ATπ ∗ (zt ,pt ) gt ,
+13
+
+where Aπ (z,p) is the transition matrix induced by Ts and π and prices are given by pt =
+P ∗ (gt , z t ).
+This equilibrium notion has three features that are important for our purposes. First, it is a
+sequential equilibrium: We work directly with time paths of states and prices rather than with
+a recursive formulation in terms of a Markov state. Second, it is self-confirming in the sense
+that, given their information and policy, agents’ beliefs about price dynamics are consistent
+with the equilibrium price process along the realized paths. Third, it features restricted perceptions because agents condition only on prices, not on the full distribution. This both reflects a
+realistic informational environment and greatly reduces the dimensionality of the state space.
+As mentioned in the introduction, in the language of Guarda (2025), agents’ beliefs are both
+“narrow” and “short”.
+These features make it natural to use RL. In practice, we parameterize the low-dimensional
+policy function π (s, z, p) on the discretized state space and approximate the maximization
+problem (12) by evaluating it along many simulated equilibrium paths. In the next subsection,
+we describe how to simulate these trajectories efficiently under a given candidate policy.
+
+3.4
+
+Simulating the Economy for Given Policy Functions
+
+Starting from an initial pair (g0 , z0 ), the simulated economy evolves according to
+zt+1 ∼ Tz (· | zt )
+gt+1 = ATπ (zt ,pt ) gt
+p t = P ∗ (gt , z t ).
+Updating the aggregate shock zt+1 is straightforward. For the distribution gt+1 , we adopt
+Young (2010)’s non-stochastic simulation method and extend it to a full matrix formulation: the
+policy function induces a sparse transition matrix over the grid, and the distribution evolves
+deterministically via matrix-vector multiplication. The main computational difficulty lies in
+the last step. In some models, such as Krusell and Smith (1998), the price functional P∗ (gt , zt )
+is available in closed form. In others, such as the Huggett model, prices are
+defined only implicitly by market-clearing conditions. Computing such implicit prices represents a significant challenge. Most existing numerical methods solve a non-linear root-finding
+problem in every period of the simulation, typically making this step the slowest part of the
+algorithm; see for example Krusell and Smith (1997), Schaab (2020), as well as the historical
+note in footnote 6 in the introduction. Our method delivers an efficient way to compute these
+implicit prices along simulated paths. We show next how this works in the Huggett economy
+there.
+Efficient handling of non-trivial market clearing conditions. In the Huggett model, the
+equilibrium interest rate pt = rt is pinned down by the requirement that bonds must be in
+zero net supply, see (6). The key insight that allows us to find equilibrium prices efficiently
+
+14
+
+is that, due to Assumption 1, individual policy functions π (s, z, p) depend on current prices p
+rather than the cross-sectional distribution Gt (s). In addition to the much lower dimensionality
+of p as compared to Gt (s), this has another key payoff: policy functions double as individual supply schedules which can easily be aggregated to obtain aggregate supply curves at each point in
+time which also depend on the current price p. Given an aggregate supply curve as a function
+of p, it is then straightforward to solve for the equilibrium price pt = P∗ ( Gt , zt ).
+To see this in more detail, consider the market clearing condition in our restricted perceptions equilibrium (13). Equivalently,
+St ( p t , z t ) = 0
+
+where
+
+St ( p, z) =
+
+Z
+
+b0 (s, z, p)dGt (s)
+
+is aggregate savings implied by the individual saving policy function b0 (s, z, p). The key observation is that the individual saving policy function depends on the interest rate p. This
+means that varying p traces out an entire individual supply schedule p 7→ b0 (s, z, p). Aggregating yields the analogous aggregate supply schedule p 7→ St ( p, z). The equilibrium price can
+then be computed time-period by time-period along each simulated path. Our approach of
+including current prices in the state space to clear markets at each point along a simulation is
+similar to Krusell and Smith (2006, Section 3.5).
+
+0.06
+
+z = 0.97, r = 0.031
+z = 0.99, r = 0.027
+z = 1.00, r = 0.024
+z = 1.01, r = 0.021
+z = 1.03, r = 0.017
+z = 1.05, r = 0.017
+Total assets B
+
+Interest rate r
+
+0.05
+0.04
+0.03
+0.02
+0.01
+0.6
+
+0.4
+
+0.2
+
+0.0
+
+0.2
+
+0.4
+
+Aggregate saving S(r, z)
+
+0.6
+
+0.8
+
+Figure 1: Aggregate saving function S(r, z) in the Huggett economy
+Finding the equilibrium interest rate can be numerically implemented in a variety of ways.
+In our experiments, we found that the simplest way of doing this is to use the discretized
+representation. Once we know the vectors gt and b0 (z, p) for the discretized cross-sectional
+distribution and saving policy function, we can compute the entire saving schedule at time t
+for all grid values of (z, p) as
+St ( p, z) = b0 (z, p)T gt .
+
+(14)
+
+Figure 1 plots the aggregate saving function p 7→ S( p, z) in the Huggett economy at some
+date t, with each line corresponding to a grid value of z. Given the realized aggregate state
+zt , we select the corresponding supply curve St (·, zt ) and determine the interest rate pt so that
+15
+
+St ( pt , zt ) = 0. In our numerical experiments the function St ( p, z) is weakly increasing in p
+under the optimal policy b0 (z, p) and in a neighborhood of the market-clearing price, so the
+solution is unique.19 However, market clearing is part of the agents’ environment and needs
+to hold for all candidate policy functions, not just at the optimal policy. As we explain in
+Section 3.7 below, we solve for optimal policies π (s, z, p) = {c(s, z, p), b0 (s, p, z)} iteratively
+starting from some initial guess. This means that it is important to have a reasonable initial
+guess for b0 (s, z, p) that delivers an upward-sloping aggregate saving supply under this initial
+guess.20
+Both the dot product in (14) and the interpolation step are simple vector operations and
+are very fast when implemented with JAX on GPUs. It is therefore computationally cheap to
+compute the entire vector of aggregate savings S( p, z) along each simulated trajectory. Given
+this precomputed saving schedule, we use linear interpolation to find the market clearing price
+pt in each period and trajectory instead of calling a separate non-linear solver inside an outer
+fixed-point iteration as is common in existing methods (Krusell and Smith, 1997; Schaab, 2020).
+
+3.5
+
+Exploiting Agents’ Structural Knowledge of their Individual Dynamics
+
+Standard RL applications, such as board games or Atari environments, typically treat both
+rewards and state transitions as unknown and learn them entirely from simulated data. Economic models are different. Agents know their preferences and they know how their choices
+affect their own individual state next period (Han et al., 2021). We make explicit use of this
+structure and refer to our approach as structural reinforcement learning (SRL).
+The value for an individual i starting from state (s, z, p) and following a given policy
+π (s, z, p) = {c(s, z, p), b0 (s, z, p)} is
+vπ (s, z, p) = E
+
+ ∞
+
+
+
+∑ β u(c(si,t , zt , pt )) si,0 = s, z0 = z, p0 = p .
+t
+
+(15)
+
+t =0
+
+Here vπ (s, z, p) is the value associated with a fixed policy π and a given stochastic process for
+the aggregate variables ( pt , zt ). The evolution of the individual state si,t is governed by the
+known transition kernel Ts or, when individual states are discretized, by the known transition
+matrices Aπ (zt ,pt ) . Agents know this mapping from current states and actions into next-period
+states because it is implied by their budget constraint and the exogenous process for idiosyn19 On the bounded price grid { p }K
+K
+k k=1 we compute { St ( pk , zt )}k=1 and find the two adjacent points that bracket
+the root. If
+S t ( p k , z t ) ≤ 0 ≤ S t ( p k +1 , z t ),
+
+we set the market-clearing price to the linear interpolant
+pt = pk −
+
+
+St ( p k , z t )
+p
+− pk .
+S t ( p k +1 , z t ) − S t ( p k , z t ) k +1
+
+20 For example, in our numerical experiments with power utility u0 ( c ) = c−σ , we have found that the initial
+
+
+
+
+yz
+yz 
+yz
+guess c0 (b, y, z, r ) = 1 + r − ( β(1 + r ))1/σ b + r and b00 (b, y, z, r ) = ( β(1 + r ))1/σ b + r − r works well.
+This would be the optimal policy function if all of (y, z, r ) were fixed over time rather than varying stochastically.
+One can also use this same initial guess but with a parameter σ0 < σ in place of σ which makes saving more
+responsive to the interest rate r and thus the aggregate saving supply better behaved.
+
+16
+
+cratic income, which we assume agents know, i.e. agents have rational expectations about
+their idiosyncratic income process. By contrast, agents do not know the law of motion for the
+aggregate variables ( pt , zt ) which are determined in general equilibrium from everyone’s decisions and market clearing. Under rational expectations, one would require agents to know
+the stochastic process for ( pt , zt ) exactly and to treat (gt , zt ) as a Markov state so that prices
+become a function pt = P∗ (gt , zt ). In our setup, agents instead take the process for ( pt , zt ) as
+an object to be learned from simulated data.
+SRL takes advantage of this separation between individual and aggregate dynamics by
+partitioning the state space (s, z, p) into individual states s and aggregate states (z, p) and treating
+these differently. We use the structural model to simulate individual transitions and payoffs
+exactly, i.e., conditional on a policy π (z, p), we treat the transition matrix Aπ (z,p) and hence
+the mapping (st , zt , pt ) 7→ st+1 as known by the agent and use this matrix to compute the
+value function the agent maximizes – see (16) below. We then use RL only to deal with the
+low-dimensional but non-Markov aggregate state (zt , pt ).
+In particular, our algorithm updates the policy π so as to increase vπ (s, z, p) based on simulated histories of (zt , pt ) rather than using a Bellman equation on the high-dimensional state
+space (gt , zt ). This keeps the learning problem low-dimensional while preserving the full
+heterogeneous-agent structure of the economy. While the simulations feature the full crosssectional distribution which evolves stochastically and non-linearly over time, we never approximate that distribution nor any mapping from it. Instead only low-dimensional prices
+enters the agent’s state.
+
+3.6
+
+Problem To Be Solved
+
+The value vπ (s, z, p) associated with a given policy π (s, z, p) was defined in (15). The agent’s
+problem is to choose a policy π = (c, b0 ) to maximize her value vπ given an initial state (s, z, p).
+It is convenient to use discretized notation and rewrite the value function vπ (s, z, p) in vector
+form as
+vπ (z, p) = E
+
+ ∞
+
+
+
+∑ β Aπ,0→t u(c(zt , pt )) z0 = z, p0 = p ,
+t
+
+(16)
+
+t =0
+
+where π (z, p) = {c(z, p), b0 (z, p)} is the discretized policy vector and
+Aπ,0→t = Aπ (z0 ,p0 ) × · · · × Aπ (zt−1 ,pt−1 )
+
+(17)
+
+denotes the transition matrix of individual states between time 0 and time t under a particular
+trajectory {zτ , pτ }tτ−=10 . Note again our partitioning of the state space into s and (z, p): the
+transition matrices Aπ (zt ,pt ) keep track of all s-transitions while the expectation in (16) is taken
+only over (z, p)-trajectories.21 Importantly, the transition matrix Aπ (zt ,pt ) encodes all relevant
+structural knowledge about the dynamics of agents’ own individual states s. The presence
+of this transition matrix in the optimization objective (16) is why we refer to our approach as
+21 Tracking value vectors using the transition matrix A
+
+π in this way is analogous to the use of such matrices in
+finite-difference methods for continuous-time HJB equations and HA models (Achdou et al., 2021).
+
+17
+
+structural RL.
+When agents choose policies π they take as given the evolution of equilibrium prices which
+evolve according to the true general-equilibrium dynamics,
+p t = P ∗ (gt , z t ),
+
+gt+1 = ATπ (zt ,pt ) gt ,
+
+zt+1 ∼ Tz (· | zt ),
+
+(18)
+
+with (g0 , z0 ) given.
+The agents’ objective is to find a policy vector π (z, p) that maximizes vπ (z, p) for all initial
+values (z, p) taking as given the evolution of equilibrium prices in (18). Note that maximizing
+agents take into account the dependence of the transition matrix Aπ,0→t in (16) and (17) on the
+policy π; in contrast, because they take prices as given, they do not take into account how price
+dynamics depend on the policy π via the term ATπ (zt ,pt ) in the Chapman-Kolmogorov equation
+for gt in (18).22
+An important feature of this problem is that, while the true state of the economy (gt , zt )
+is extremely high-dimensional (because gt is a full cross-sectional distribution), the state that
+enters agents’ policy and value functions (st , zt , pt ) is low-dimensional. The agent does not
+work with a perceived law of motion for prices. Instead, she treats the process for ( pt , zt )
+as given, observes realized sequences along simulated paths, and bases decisions on these
+realizations. As a result, there is no inner-outer fixed-point loop over perceived price laws of
+motion as in Krusell and Smith (1998). Our algorithm therefore operates directly on the lowdimensional state (st , zt , pt ) from the agent’s perspective, while the high-dimensional state
+
+(gt , zt ) only appears in the background through the law of motion for prices.
+
+3.7
+
+Implementation: Structural Policy Gradient Algorithm
+
+To evaluate a candidate policy π, we approximate the value vector using Monte Carlo simulation as explained in Section 3.1. We simulate N trajectories of the economy under this policy
+and form the sample analog of the value vector
+1 N
+v
+bπ =
+N n∑
+=1
+
+ T
+
+∑
+
+t
+
+n
+n n
+β Aπ,0
+→t u (c( zt , pt ))
+
+
+,
+
+(19)
+
+t =0
+
+where T is a large truncation horizon and the simulated paths are generated from
+pnt = P∗ (gtn , znt ),
+
+gtn+1 = ATπ (zn ,pn ) gtn ,
+t
+
+t
+
+znt+1 ∼ Tz (· | znt ),
+
+(20)
+
+starting from initial conditions g0n ∼ ψg and z0n ∼ ψz . Thus, v
+bπ in (19) is the sample analog of
+vπ (z, p) in (16) averaged over the initial distribution of (z, p) induced by the initial distribution
+of (g, z), i.e. v
+bπ ≈ Ez0 ∼ψz ,g0 ∼ψg [vπ (z0 , p0 )] with p0 = P∗ (g0 , z0 ).
+In practice, we work with a scalar objective that averages over initial individual states. Let
+d0 denote the uniform distribution on the individual-state grid, so that d0 (s j ) = 1/J. We then
+22 As we explain below, in our SPG algorithm which maximizes the Monte Carlo counterpart to (16) with respect
+
+to π, we apply a stop-gradient to simulated prices to ensure that agents take prices as given.
+
+18
+
+maximize
+
+L(θ ) = dT0 vbπ .
+
+(21)
+
+Because our state space is low-dimensional, we can work with a grid-based (tabular) approach
+and we parameterize the policy as
+
+
+ 
+
+π ( z1 , p1 )
+π ( s1 , z1 , p1 )
+
+ 
+
+..
+..
+=
+,
+θ=
+.
+.
+
+ 
+
+π (zK , p L )
+π (s J , zK , p L )
+where J, K, and L are the numbers of grid points on the s, z, and p grids. That is, the parameter
+vector θ is simply the J × K × L-dimensional vector of values of the policy on the (s, z, p) grid.23
+Furthermore, in practice it is costly to compute the high-dimensional matrix multiplications
+n
+Aπ,0
+→t = Aπ (z0n ,p0n ) × · · · × Aπ (znt−1 ,pnt−1 ) in (19). After substituting in (21), we therefore rewrite
+
+the optimization objective as
+
+L(θ ) =
+
+1 N T t n T
+∑ β (dπ,t ) u(c(znt , pnt )),
+N n∑
+=1 t =0
+
+n = (An
+T
+where dπ,t
+π,0→t ) d0 is the cross-sectional distribution of s at time t under policy π start-
+
+ing from the initial uniform distribution d0 . We compute this distribution iteratively by solving
+n
+n
+T n
+the Chapman-Kolmogorov equation dπ,t
++1 = ( Aπ (zt ,pt ) ) dπ,t forward in time using the Young
+
+(2010) method. 24
+
+Figure 2: Computational graph
+Figure 2 presents a computational graph that illustrates the algorithm. Since the mapping
+23 One can instead parameterize the policy as a neural network π ( s, z, p; θ ).
+
+For the low-dimensional policy
+functions in this paper, a grid-based parameterization is sufficient.
+24 Azinovic et al. (2022) use the Young (2010) method in a related fashion to construct an optimization objective
+involving a discretized cross-sectional distribution. However, they use neural networks to minimize Euler equation
+errors whereas we use a grid-based approach to maximize a value vector.
+
+19
+
+from parameters θ to the objective L(θ ) is differentiable, we use stochastic gradient ascent (or
+variants) to update
+θ k+1 = θ k + ηk ∇θ L(θ k ),
+where ηk is the learning rate at iteration k. A stop-gradient is applied to the price update
+pnt = P∗ (gtn , znt ) in (20) so that, when computing gradients, prices are treated as exogenous.
+This is consistent with the standard notion of competitive equilibrium, in which agents take the
+process for ( pt , zt ) as given and do not internalize how their behavior affects price formation.
+Finally, we assess convergence of the algorithm by tracking the change in the policy vector θ
+over the (s, z, p) grid. Convergence is achieved when the L∞ (sup) norm of the policy update
+falls below a tolerance,
+
+kθ k+1 − θ k k∞ < econverge
+
+where
+
+kxk∞ ≡ max | x jkl |.
+j,k,l
+
+We report our choice of convergence tolerance econverge for each application in Appendix A.
+Algorithm 1 summarizes the implementation.
+Algorithm 1: Structural Policy Gradient Algorithm
+Input : Initial policy parameters θ 0 ; step size sequence {ηk }; number of simulated
+trajectories N; horizon T.
+Output: Approximate optimal policy parameters θ ∗ .
+1. Initialize parameters θ 0 .
+2. For each iteration k = 0, 1, 2, . . . :
+(a) Simulate N trajectories
+
+{(znt , pnt , gnt )}tT=0 ,
+
+n = 1, . . . , N,
+
+using policy π (·; θ k ) and market clearing conditions.
+(b) Compute the sample objective
+
+L(θ k ) = dT0 vbπ
+
+1 N
+where v
+bπ =
+N n∑
+=1
+
+"
+
+T
+
+#
+
+∑ βt Aπ,0→t u(c(znt , pnt )) .
+
+t =0
+
+(c) Update parameters by stochastic gradient ascent (or variants):
+θ k+1 = θ k + ηk ∇θ L(θ k ).
+(d) Stop when convergence criteria are met.
+
+4
+
+Computational Experiments
+
+In this section we report computational experiments for three benchmark economies: the
+Huggett model, the classic Krusell and Smith (1998) model, and a one-account
+20
+
+heterogeneous agent New Keynesian (HANK) model with nominal rigidities.
+We implement all three models in JAX and run them on a single NVIDIA A100 GPU on
+Google Colab. Table 1 summarizes performance. Since our algorithm is stochastic and uses
+Monte Carlo simulations, we run our algorithm 10 times for each specification and report
+averages across runs. The first column shows the average number of epochs until convergence,
+and the last column the corresponding average time for a single run.
+Model
+
+Average converge epoch
+
+# Runs
+
+Average Runtime (sec)
+
+Krusell-Smith
+
+438.4
+
+10
+
+56.55
+
+Huggett with agg. shocks
+
+480.6
+
+10
+
+75.29
+
+HANK with agg. shocks
+
+496.5
+
+10
+
+199.53
+
+Partial equilibrium (Huggett)
+
+289.3
+
+10
+
+39.49
+
+Table 1: Runtimes
+Solving the Krusell-Smith model takes about 55 seconds, in line with other global solution
+methods in the literature. By contrast, the Huggett and HANK models are typically viewed
+as more challenging because they feature non-trivial market clearing conditions: standard approaches nest an inner loop that repeatedly solves for prices until markets clear. Nevertheless,
+our method solves the Huggett model in 75 seconds and the HANK model in about 3 minutes.
+Finally, we also compare the cost of computing the model’s general equilibrium (GE) to
+that of computing the corresponding partial equilibrium (PE) problem (see below). We find
+that, while computing the GE problem takes longer as expected, the difference in runtime
+is modest. In the Huggett model, for example, moving from partial to general equilibrium
+increases runtime from 39 seconds to 75 seconds. This is because we do not solve general
+equilibrium with a nested inner-outer loop that alternates between solving optimal policies
+and updating price functions or perceived laws of motion. Instead, prices are learned in an
+online fashion: along each simulated path we compute the market-clearing price implied by
+current policies, and the policy update uses these realized prices directly.
+
+4.1
+
+Huggett Model with Aggregate Risk
+
+We start our computational experiments with the Huggett economy described below.25
+Calibration. We interpret one period as a year and set the household discount factor to β =
+1− σ
+
+0.96. Preferences are isoelastic u(c) = 1c −σ and we set σ = 2. In the Huggett model, both the
+idiosyncratic and the aggregate income components follow log AR(1) processes. We set the
+persistence parameters to ρy = 0.6 and ρz = 0.9 and the standard deviations of the innovations
+to νy = 0.2 and νz = 0.02. We discretize these processes on finite grids using a standard
+Tauchen procedure (details in the Appendix A). Finally, we impose a borrowing limit b = −1
+25 Our comparison of runtimes in Table 1 and Figure 4 below make reference to the partial equilibrium problem
+
+of the Huggett economy. We present the details in Appendix A.1.
+
+21
+
+and fix aggregate bond supply at B = 0, so bonds are in zero net supply. The full calibration
+table is presented in Appendix A.
+Hyperparameters. We discuss and report hyperparameter choices for all our experiments in
+the Appendix A.
+Figure 3 reports the numerical solution and a simulation for the Huggett
+
+Numerical Results.
+economy.
+
+Log Aggregate Income z
+
+Consumption c
+
+2.00
+1.75
+1.50
+1.25
+1.00
+0.75
+0.50
+
+0
+
+5
+
+10
+
+15
+
+Wealth b
+
+20
+
+25
+
+0.02
+0.00
+0.02
+0.04
+
+30
+
+0.0275
+0.0250
+0.0225
+
+40
+
+Time
+
+60
+
+80
+
+0.0175
+20
+
+40
+
+Time
+
+60
+
+80
+
+20
+
+40
+
+Time
+
+60
+
+80
+
+1.5e-5
+
+100
+
+Trajectory 1
+Trajectory 2
+Trajectory 3
+Total assets B
+
+1.2e-5
+
+0.03
+
+1.0e-5
+7.5e-6
+5.0e-6
+2.5e-6
+0.0e0
+
+0.6
+
+(d) Interest rate
+
+0
+
+z = 0.97, r = 0.031
+z = 0.99, r = 0.027
+z = 1.00, r = 0.024
+z = 1.01, r = 0.021
+z = 1.03, r = 0.017
+z = 1.05, r = 0.017
+Total assets B
+
+0.04
+
+100
+
+1.00
+
+(c) Aggregate consumption
+
+0.01
+0
+
+1.02
+
+100
+
+0.02
+
+0.0200
+
+1.04
+
+(b) Aggregate state
+
+0.05
+
+0.0300
+
+Interest rate r
+
+Interest rate r
+
+0.0325
+
+20
+
+0.06
+
+Trajectory 1
+Trajectory 2
+Trajectory 3
+
+Trajectory 1
+Trajectory 2
+Trajectory 3
+
+1.06
+
+0.98
+0
+
+(a) Optimal consumption policy
+0.0350
+
+Trajectory 1
+Trajectory 2
+Trajectory 3
+
+0.04
+
+Aggregate consumption C
+
+y = 0.55, z = 0.96, r = 0.033
+y = 0.55, z = 1.04, r = 0.017
+y = 1.82, z = 0.96, r = 0.033
+y = 1.82, z = 1.04, r = 0.017
+
+2.25
+
+Aggregate saving S
+
+2.50
+
+0.4
+
+0.2
+
+0.0
+
+0.2
+
+0.4
+
+Aggregate saving S(r, z)
+
+0.6
+
+0.8
+
+-2.5e-6
+
+(e) Saving schedule
+
+0
+
+20
+
+40
+
+Time
+
+60
+
+80
+
+100
+
+(f) Aggregate saving
+
+Figure 3: Simulation Results
+Panel (a) plots the optimal consumption policy as a function of wealth b on the horizontal
+axis. Each line corresponds to one combination of individual income, aggregate income, and
+prices. We choose the realizations of (yt , zt , pt ) that occur frequently in our simulations. The
+policy is monotonically increasing and concave in b, as expected from standard theory: richer
+households consume more, but at a decreasing marginal propensity.
+Panels (b)-(d) display simulated time series for the aggregate state, aggregate consumption
+and equilibrium prices. Panel (b) shows the exogenous process for log aggregate income zt .
+Panel (c) plots aggregate consumption Ct , which co-moves with zt but is somewhat smoother
+due to precautionary savings and imperfect risk sharing. Panel (d) shows the resulting interest
+rate rt , which adjusts endogenously to clear the bond market in the presence of incomplete
+markets and zero net bond supply.
+Panel (e) revisits the equilibrium bond demand schedule S( p, z) discussed in Section 3.4,
+now evaluated at the trained policy. For different realizations of the aggregate state z, the figure
+shows how the aggregate demand for bonds varies with the interest rate. Market clearing
+corresponds to the intersection of S( p, z) with zero.
+Finally, Panel (f) plots the bond-market clearing residual along the simulated path, i.e. the
+22
+
+difference between aggregate bond holdings implied by households’ policies and the fixed
+supply of zero. The residual remains very close to zero throughout the simulation. The small
+deviations that do arise are due to numerical interpolation in prices rather than to a failure
+of the algorithm to enforce equilibrium. In practice, these deviations are negligible both in
+absolute terms. The average gap in bond market clearing for a single run is about 4.4 × 10−6 .
+Partial equilibrium problem. To gauge the accuracy of our SRL approach, we first consider
+a partial equilibrium (PE) version of the Huggett economy. In PE, households take as given
+an exogenous Markov process for interest rates and solve their individual dynamic program
+using either our SRL method or a standard value function iteration (VFI) algorithm. Because
+the PE environment dispenses with the fixed point over prices and distributions, it is a setting
+in which there is broad agreement on the correctness of conventional VFI solutions. This makes
+it a natural benchmark against which to compare the policies implied by our method. We
+describe the details of the PE specification and calibration in Appendix A.1.
+y = 0.55, r = 0.019, z = 0.94
+
+2.25
+2.00
+
+2.00
+
+1.75
+1.50
+1.25
+1.00
+0.75
+0.50
+
+1.75
+1.50
+1.25
+1.00
+0.75
+
+0
+
+5
+
+10
+
+15
+
+Wealth b
+
+20
+
+25
+
+0.50
+
+30
+
+y = 1.82, r = 0.019, z = 0.94
+
+0
+
+Consumption c
+
+1.8
+1.6
+1.4
+
+10
+
+15
+
+Wealth b
+
+20
+
+25
+
+30
+
+25
+
+30
+
+VFI
+Our Method
+
+2.2
+
+2.0
+
+5
+
+y = 1.82, r = 0.032, z = 1.06
+
+2.4
+
+VFI
+Our Method
+
+2.2
+
+Consumption c
+
+VFI
+Our Method
+
+2.25
+
+Consumption c
+
+Consumption c
+
+y = 0.55, r = 0.032, z = 1.06
+
+VFI
+Our Method
+
+2.0
+1.8
+1.6
+1.4
+
+1.2
+
+1.2
+0
+
+5
+
+10
+
+15
+
+Wealth b
+
+20
+
+25
+
+30
+
+0
+
+5
+
+10
+
+15
+
+Wealth b
+
+20
+
+Figure 4: Solution comparison for the PE problem: SRL vs VFI
+Figure 4 reports the comparison. Each panel plots the optimal consumption policy as a
+function of wealth b for four combinations of individual income y and interest rates r. The
+dashed line shows the policy obtained from our SRL algorithm, while the solid line shows
+the corresponding VFI solution in the PE environment. Across all four panels, the two sets
+of policy functions are almost indistinguishable. This comparison is a first reassuring test of
+the accuracy of our SRL method. It shows that, in a setting where a trusted VFI benchmark is
+available, our SRL approach replicates the rational expectation solution closely.
+
+23
+
+Solutions with Lagged Price History.
+
+A complementary way to assess the restrictiveness of
+
+conditioning only on pt is to enlarge the observable state with lagged prices. Conceptually,
+this moves us part of the way toward the full MA(∞) representation of the agent’s problem,
+which in the limit would reproduce the rational expectations solution. Concretely, we now
+re-solve the Huggett model allowing households to keep track of one lagged price, so that pt−1
+becomes an additional state variable.
+s2 = 0.55, zt = 0.982, pt = 0.029
+Only current price
+pt 1 = 0.027
+pt 1 = 0.029
+pt 1 = 0.031
+
+1.75
+
+2.00
+
+Consumption c
+
+Consumption c
+
+2.00
+1.50
+1.25
+1.00
+
+1.75
+
+1.00
+
+0.50
+
+0.50
+
+5
+
+10
+
+15
+
+Wealth s1
+
+20
+
+25
+
+30
+
+0
+
+1.0
+
+Wealth s1
+
+25
+
+30
+
+1.4
+
+20
+
+25
+
+30
+
+5
+
+10
+
+15
+
+Wealth s1
+
+20
+
+25
+
+10
+
+15
+
+Wealth s1
+
+20
+
+25
+
+30
+
+25
+
+30
+
+25
+
+30
+
+1.8
+1.6
+1.4
+
+30
+
+0
+
+5
+
+10
+
+15
+
+Wealth s1
+
+20
+
+s2 = 1.82, zt = 1.019, pt = 0.020
+
+2.4
+
+Only current price
+pt 1 = 0.018
+pt 1 = 0.020
+pt 1 = 0.022
+
+2.2
+
+1.4
+
+1.0
+
+15
+
+2.0
+
+1.6
+
+1.0
+
+5
+
+Only current price
+pt 1 = 0.018
+pt 1 = 0.020
+pt 1 = 0.022
+
+2.2
+
+1.8
+
+1.2
+
+Wealth s1
+
+0
+
+s2 = 1.00, zt = 1.019, pt = 0.020
+
+Only current price
+pt 1 = 0.023
+pt 1 = 0.025
+pt 1 = 0.027
+
+2.0
+
+1.2
+10
+
+0.50
+
+Consumption c
+
+Consumption c
+
+1.6
+
+5
+
+30
+
+s2 = 1.82, zt = 0.998, pt = 0.025
+
+2.2
+
+1.8
+
+0
+
+25
+
+1.0
+
+2.4
+
+Only current price
+pt 1 = 0.027
+pt 1 = 0.029
+pt 1 = 0.031
+
+2.0
+
+20
+
+1.2
+0
+
+s2 = 1.82, zt = 0.982, pt = 0.029
+
+2.2
+
+15
+
+Wealth s1
+
+1.4
+
+1.0
+20
+
+10
+
+1.6
+
+1.2
+
+15
+
+5
+
+1.8
+
+1.2
+
+10
+
+1.00
+
+Consumption c
+
+Consumption c
+
+Consumption c
+
+1.4
+
+2.4
+
+Consumption c
+
+2.0
+
+1.6
+
+5
+
+1.25
+
+Only current price
+pt 1 = 0.023
+pt 1 = 0.025
+pt 1 = 0.027
+
+2.2
+
+1.8
+
+0
+
+1.50
+
+s2 = 1.00, zt = 0.998, pt = 0.025
+
+Only current price
+pt 1 = 0.027
+pt 1 = 0.029
+pt 1 = 0.031
+
+2.0
+
+1.75
+
+0.75
+
+s2 = 1.00, zt = 0.982, pt = 0.029
+2.2
+
+2.00
+
+1.25
+
+0.75
+
+s2 = 0.55, zt = 1.019, pt = 0.020
+Only current price
+pt 1 = 0.018
+pt 1 = 0.020
+pt 1 = 0.022
+
+2.25
+
+1.50
+
+0.75
+0
+
+s2 = 0.55, zt = 0.998, pt = 0.025
+Only current price
+pt 1 = 0.023
+pt 1 = 0.025
+pt 1 = 0.027
+
+2.25
+
+Consumption c
+
+2.25
+
+2.0
+1.8
+1.6
+1.4
+1.2
+
+0
+
+5
+
+10
+
+15
+
+Wealth s1
+
+20
+
+25
+
+30
+
+0
+
+5
+
+10
+
+15
+
+Wealth s1
+
+20
+
+Figure 5: Consumption Policy Function with Price Lags pt−1 as State Variable
+From a computational standpoint, this extension is straightforward: our method can accommodate a small number of lagged observables without reintroducing the curse of dimensionality. From an economic standpoint, it should, in principle, help agents forecast: because
+prices are not Markov in pt alone, a longer price history ought to contain incremental information about future prices.
+Figure 5 shows that, in practice, the effect of this additional information is minimal. The
+figure compares solutions to the Huggett model when agents condition (i) only on the current
+price pt (solid blue line) and (ii) on both pt and its lag pt−1 (dashed lines). Each panel plots
+the consumption policy across wealth b for fixed values of the individual income state y, the
+aggregate income state z, and the current interest rate r. Different dashed lines correspond to
+different realizations of past prices.
+Across all panels, the dashed lines lie almost on top of the solid line. That is, once we
+fix the current state (yt , zt , pt ), optimal consumption is almost insensitive to the additional
+24
+
+information contained in pt−1 . This suggests that, at least in the Huggett environment, current
+prices already summarize the relevant aspects of the history for household decisions, and that
+extending the observable state to include one lag has only a negligible impact on behavior.
+Next, we study how the quality
+
+Dependence on the number of trajectories (sample size).
+
+and stability of the learned policy depend on the number of simulated trajectories used for
+training. Figure 6 summarizes these results.
+Panel (a) reports the consumption policy obtained from a single training run with 512 simulated trajectories. This number of trajectories is a key hyperparameter in our algorithm: it
+controls how many distinct state-price paths agents observe and learn from. The resulting
+policy is monotone and concave in wealth, as theory would suggest.
+2.50
+2.25
+
+2.00
+
+1.75
+1.50
+1.25
+
+1.75
+1.50
+1.25
+
+1.00
+
+1.00
+
+0.75
+
+0.75
+
+0.50
+
+0
+
+2.50
+
+10
+
+15
+
+20
+
+25
+
+Wealth b
+(a) Policy with Nsample = 512
+
+0.50
+
+30
+
+2.00
+
+1.50
+1.25
+
+0.75
+15
+
+20
+
+25
+
+Wealth b
+(c) Policy CI with Nsample = 2048
+
+25
+
+30
+
+20
+
+25
+
+30
+
+1.25
+
+0.75
+10
+
+20
+
+1.50
+1.00
+
+5
+
+15
+
+1.75
+
+1.00
+
+0
+
+10
+
+y = 0.55, z = 0.96, r = 0.034
+y = 0.55, z = 1.04, r = 0.016
+y = 1.82, z = 0.96, r = 0.034
+y = 1.82, z = 1.04, r = 0.016
+
+2.25
+
+1.75
+
+0.50
+
+5
+
+2.50
+
+Consumption c
+
+2.00
+
+0
+
+Wealth b
+(b) Policy CI with Nsample = 512
+
+y = 0.55, z = 0.96, r = 0.033
+y = 0.55, z = 1.04, r = 0.019
+y = 1.82, z = 0.96, r = 0.033
+y = 1.82, z = 1.04, r = 0.019
+
+2.25
+
+Consumption c
+
+5
+
+y = 0.55, z = 0.96, r = 0.033
+y = 0.55, z = 1.04, r = 0.017
+y = 1.82, z = 0.96, r = 0.033
+y = 1.82, z = 1.04, r = 0.017
+
+2.25
+
+Consumption c
+
+2.00
+
+Consumption c
+
+2.50
+
+y = 0.55, z = 0.96, r = 0.033
+y = 0.55, z = 1.04, r = 0.017
+y = 1.82, z = 0.96, r = 0.033
+y = 1.82, z = 1.04, r = 0.017
+
+30
+
+0.50
+
+0
+
+5
+
+10
+
+15
+
+Wealth b
+(d) Policy CI with Nsample = 24
+
+Figure 6: Dependence of Policies on Sample Size in the Huggett model
+Panel (b) turns to sampling uncertainty. Here we compute pointwise 95% confidence intervals (CIs) for the policy based on 10 independent training runs, each again using 512 trajectories. The figure shows that the confidence bands are quite tight across the wealth distribution.
+The bands widen modestly at higher wealth levels. This pattern is natural: states with high
+wealth are visited only rarely in the simulations — indeed, beyond roughly b > 10 there is essentially no mass in the stationary distribution, so the algorithm has fewer observations from
+which to learn. Regions of the state space that are visited infrequently thus come with more
+sampling noise in the estimated policy.
+25
+
+Panels (c) and (d) vary the number of training trajectories to make this dependence more
+transparent. In Panel (c), we increase the number of trajectories. The point estimates of the
+policy change very little, but the confidence bands shrink, including in the high-wealth region.
+In other words, feeding the algorithm more data primarily reduces uncertainty; it does not
+systematically move the policy itself. Conversely, Panel (d) shows the case with fewer trajectories. Here the confidence intervals become much wider, especially at high wealth levels
+where visits are sparse. Put differently, when agents have learned from only a small number
+of simulations, agents who happen to find themselves in the same high-wealth state can end
+up taking quite different actions across independent runs.
+These results suggest a useful way to think about our stochastic solution method. If we
+could associate to each point in the state space a simple measure of “confidence” — for example, based on the width of the confidence band or on how often that state is visited in simulation — it would reveal that agents are very certain about their behavior in frequently visited
+states, but much less certain in rare states. Our experiments indicate that, for economically relevant regions of the state space (low and medium wealth), the learned policies are both stable
+and precise, while the main residual uncertainty is confined to tails that households almost
+never reach in practice.
+
+4.2
+
+Krusell-Smith Model
+
+Setup. The household side of the Krusell-Smith economy is as in the Huggett model, except that financial wealth is now productive capital owned by households and rented
+to a representative firm. The firm uses capital and labor to produce according to
+Yt = zt Ktα L1t −α .
+Under perfect competition, factor prices equal marginal products, wt = (1 − α) YLtt and rtK = α KYtt ,
+where wt is the real wage rate and rtK the rental rate of capital. Since households own the capital
+and pay for depreciation, their net rate of return on capital is rt = rtK − δ. The market clearing
+condition for capital is
+
+Z
+
+b dGt (b, y) = Kt ,
+
+and labor market clearing condition is given by Lt = 1 because each household supplies one
+unit of labor inelastically.
+Calibration. One period corresponds to a year. On the preference side, we set β = 0.95 and
+use CRRA preferences with coefficient of relative risk aversion σ = 3. On the production side,
+we set the capital share to α = 0.36 and the depreciation rate to δ = 0.08, standard in the
+quantitative macro literature. For idiosyncratic income, we retain the same AR(1) specification
+and parameters as in the Huggett model, so that the cross-sectional heterogeneity is directly
+comparable across the two experiments. Aggregate productivity zt also follows a log AR(1)
+process with persistence ρz = 0.9 and innovation volatility νz = 0.03. All log AR(1) processes
+
+26
+
+are discretized on finite grids using a standard Tauchen procedure; the details of the grids are
+reported in Appendix A.
+Figure 7 plots simulation results for our solution of the Krusell-Smith
+
+Numerical Results.
+
+model. We start in Panel (a) with the exogenous aggregate productivity process zt , and plot in
+Panel (b) aggregate capital Kt , in Panel (c) aggregate consumption Ct , in Panel (d) the aggregate
+rental rate rtK and in Panel (e) the aggregate wage wt . As in standard neoclassical models, Kt
+and Ct comove strongly with zt , while rtK and wt move in opposite directions.
+
+6.5
+
+Aggregate capital k
+
+log TFP(z)
+
+0.1
+0.0
+0.1
+
+1.8
+
+Trajectory 1
+Trajectory 2
+Trajectory 3
+
+7.0
+
+Aggregate consumption C
+
+Trajectory 1
+Trajectory 2
+Trajectory 3
+
+0.2
+
+6.0
+5.5
+5.0
+4.5
+4.0
+
+0.2
+
+3.5
+25
+
+50
+
+75
+
+100 125 150 175 200
+
+0
+
+Time
+
+(a) log TFP log(z)
+
+75
+
+100
+
+Time
+
+125
+
+150
+
+175
+
+200
+
+1.3
+
+Wage w
+
+0.05
+
+1.2
+1.1
+
+0.04
+
+1.0
+
+0.03
+
+0.9
+0
+
+25
+
+50
+
+75
+
+100
+
+Time
+
+125
+
+150
+
+175
+
+200
+
+0
+
+(d) Rental rate r
+
+25
+
+50
+
+1.4
+1.3
+1.2
+1.1
+
+1.8
+
+1.4
+
+0.06
+
+1.5
+
+75
+
+100
+
+Time
+
+125
+
+150
+
+175
+
+0
+
+25
+
+50
+
+75
+
+100
+
+Time
+
+125
+
+150
+
+175
+
+200
+
+(c) Aggregate consumption C
+
+Trajectory 1
+Trajectory 2
+Trajectory 3
+
+1.5
+
+0.07
+
+Rental rate r
+
+50
+
+(b) Aggregate capital K
+
+Trajectory 1
+Trajectory 2
+Trajectory 3
+
+0.08
+
+25
+
+1.6
+
+Aggregate consumption C
+
+0
+
+Trajectory 1
+Trajectory 2
+Trajectory 3
+
+1.7
+
+200
+
+(e) Wage w
+
+All trajectories
+
+1.7
+1.6
+1.5
+1.4
+1.3
+1.2
+1.1
+
+0.2
+
+0.1
+
+0.0
+
+log TFP z
+
+0.1
+
+0.2
+
+(f) C vs log TFP(z)
+
+Figure 7: Simulation Results
+The final panel (f) presents a scatter plot of aggregate consumption Ct against the exogenous productivity shock zt . We find substantial vertical dispersion: for a given realization of
+zt , different periods in the simulation exhibit quite different levels of aggregate consumption.
+If all points lay on a single curve, then the same aggregate productivity level would always be
+associated with the same Ct . Instead, the cross-sectional wealth distribution shifts over time in
+ways that matter for aggregates, so the mapping zt 7→ Ct is history-dependent. The blue dots
+in Panel (f) represent states actually visited along the simulated path, so this vertical spread
+measures the quantitative importance of distributional dynamics for aggregate outcomes. For
+values of zt very close to zero, simulated realizations of Ct range roughly from 1.24 to 1.6, i.e.
+a difference on the order of 20% of steady-state consumption. This illustrates that, even in this
+relatively simple heterogeneous-agent model, the cross-sectional distribution has a non-trivial
+impact on the aggregate response.
+Dependence on the number of trajectories (sample size). We now illustrate how the learned
+policy depends on the number of simulated trajectories used for training, similar to our discussion of Figure 6 for the Huggett model. Panels (a) and (b) report the consumption policy
+27
+
+3.0
+
+2.0
+1.5
+1.0
+0.5
+
+0
+
+5
+
+10
+
+15
+
+20
+
+25
+
+Wealth b
+(a) Policy with Nsample = 512
+
+1.5
+
+0.5
+
+30
+
+0
+
+3.0
+
+y = 0.55, r = 0.049, w = 1.14
+y = 1.00, r = 0.049, w = 1.14
+y = 1.82, r = 0.049, w = 1.14
+
+2.0
+1.5
+1.0
+
+5
+
+10
+
+15
+
+20
+
+25
+
+30
+
+20
+
+25
+
+30
+
+Wealth b
+(b) Policy CI with Nsample = 512
+y = 0.55, r = 0.049, w = 1.14
+y = 1.00, r = 0.049, w = 1.14
+y = 1.82, r = 0.049, w = 1.14
+
+2.5
+
+Consumption c
+
+2.5
+
+Consumption c
+
+2.0
+
+1.0
+
+3.0
+
+0.5
+
+y = 0.55, r = 0.049, w = 1.14
+y = 1.00, r = 0.049, w = 1.14
+y = 1.82, r = 0.049, w = 1.14
+
+2.5
+
+Consumption c
+
+2.5
+
+Consumption c
+
+3.0
+
+y = 0.55, r = 0.049, w = 1.14
+y = 1.00, r = 0.049, w = 1.14
+y = 1.82, r = 0.049, w = 1.14
+
+2.0
+1.5
+1.0
+
+0
+
+5
+
+10
+
+15
+
+20
+
+25
+
+Wealth b
+(c) Policy CI with Nsample = 2048
+
+30
+
+0.5
+
+0
+
+5
+
+10
+
+15
+
+Wealth b
+(d) Policy CI with Nsample = 24
+
+Figure 8: Dependence of Policies on Sample Size in the Krusell and Smith (1998) model
+from a single training run and the associated 95% confidence intervals based on 10 independent training runs, both using 512 trajectories, respectively. The resulting policy is monotone
+and concave in wealth and visually very similar to the policies we documented in the Huggett
+experiment.There is only mild sampling uncertainty. Confidence bands are tight, especially
+for low wealth levels.
+Panel (c) increases the number of trajectories to 2048 and illustrates that confidence bands
+shrink even for the highest wealth levels. Panel (d) instead reduces the number of trajectories
+to 24 and illustrates that sampling uncertainty across runs increases substantially, especially at
+high wealth levels which are visited more rarely during the simulation.
+Comparison to rational expectation solution.
+
+The partial equilibrium comparison we used
+
+in Section 4.1 isolates the individual dynamic programming problem, where there is broad
+agreement on the accuracy of conventional VFI solutions. In general equilibrium, by contrast,
+obtaining the rational expectations (RE) solution requires treating the entire cross-sectional
+distribution as a state variable and solving the Master equation, a problem of much higher
+computational complexity. A growing literature proposes global solution methods for such
+RE equilibria. One recent example is the DeepHAM approach of Han et al. (2021), which uses
+deep neural networks to approximate high-dimensional policy and value functions.
+To benchmark our SRL method in this environment, we compare it directly to DeepHAM.
+
+28
+
+Because the RE policy functions in DeepHAM conditions on the full cross-sectional distribution, whereas our approach conditions only on prices, the policy functions are not directly
+comparable. We therefore focus on equilibrium dynamics. Specifically, we initialize both
+economies from the same cross-sectional distribution and expose them to identical sequences
+of aggregate shocks. Figure 9 reports the resulting paths of aggregate consumption and capital.
+Across both panels, the two methods generate nearly indistinguishable aggregate dynamics.
+This comparison indicates that, at least in the Krusell-Smith environment, our SRL approach can replicate the rational expectations solution while retaining the flexibility and scalability of a reinforcement-learning implementation.
+DeepHAM
+Our Method
+
+41
+2.90
+
+Aggregate capital K
+
+Aggregate consumption C
+
+42
+
+DeepHAM
+Our Method
+
+2.95
+
+2.85
+2.80
+2.75
+
+40
+39
+38
+37
+
+0
+
+200
+
+400
+
+Time
+
+600
+
+800
+
+1000
+
+0
+
+200
+
+400
+
+Time
+
+600
+
+800
+
+1000
+
+Figure 9: Comparison to RE Solution with the DeepHAM method in Han et al. (2021)
+
+4.3
+
+HANK Model
+
+Our final benchmark economy is a one-account HANK model with sticky prices. This environment adds nominal rigidities and a richer firm block to the incomplete-markets structure
+above.
+Setup. The problem of household i is identical to that in the Huggett model, except that labor supply
+is now endogenous. In sequence form,
+∞
+
+vi,0 = max E0 ∑ βt u(ci,t , ni,t )
+{ci,t ,ni,t }
+
+s.t.
+
+t =0
+
+ci,t + bi,t+1 = (1 + rt )bi,t + wt yi,t ni,t + dt − Tt ,
+
+bi,t+1 ≥ 0,
+
+where wt is the real wage, dt denotes dividend payouts, and Tt is a lump-sum tax. Households
+are the ultimate owners of firms but equity shares are not traded. The idiosyncratic income
+process yi,t is as in the Huggett model.
+On the production side, a competitive final-good firm aggregates a continuum of intermediate inputs using a CES production technology with elasticity of substitution ε. Denoting by
+Yt aggregate output of the final good, cost minimization implies that demand for intermediate
+input j is
+
+y j,t =
+
+Pj,t
+Pt
+
+29
+
+−ε
+Yt ,
+
+(22)
+
+where Pj,t is the price of good j and
+
+Pt =
+
+Z 1
+0
+
+1− ε
+Pj,t
+dj
+
+ 1−1 ε
+
+is the aggregate price index.
+Each intermediate good j is produced by a monopolistically competitive firm with technology y j,t = zt L j,t . The productivity term zt is common to all firms and follows a Markov process
+zt+1 ∼ Tz (· | zt ). Firm j chooses its price { Pj,t } to maximize the discounted value of profits
+subject to a quadratic adjustment cost as in Rotemberg (1982):
+∞
+
+Jj,0 = max E0 ∑
+{ Pj,t }
+
+1
+R0−→
+t
+
+t =0
+
+
+
+Pj,t
+wt
+θ
+y j,t − y j,t −
+Pt
+zt
+2
+
+
+
+Pj,t − Pj,t−1
+Pj,t−1
+
+2 
+Yt
+
+subject to the demand function (22) and taking as given an initial price Pj,−1 . Here R0→t =
+R1 × . . . × Rt denotes the gross real interest rate between periods 0 and t with Rt = 1 + rt .
+We focus on a symmetric distribution of initial prices, Pj,−1 = Pj0 ,−1 , which implies symmetry ex post. In equilibrium we therefore have Pj,t = Pt and y j,t = Yt for all j. Denoting net
+inflation by
+Πt =
+
+Pt − Pt−1
+,
+Pt−1
+
+the firm’s problem gives rise to the New Keynesian Phillips curve
+Π t (1 + Π t ) =
+
+ε
+θ
+
+
+
+wt
+ε−1
+−
+zt
+ε
+
+
+
+
+
+1 Yt+1
++ Et R −
+Π
+(
+1
++
+Π
+)
+t +1
+t +1 .
+t +1
+Yt
+
+(23)
+
+The first term captures the gap between real marginal cost wztt and the desired markup ε−ε 1 ,
+while the second term reflects expected future inflation, discounted by the real interest rate
+and scaled by output growth. Given inflation, firm dividend payments are
+
+dt =
+
+
+wt
+θ
+1−
+Yt − Π2t Yt .
+zt
+2
+
+Monetary policy follows a Taylor rule
+1 + it+1 = R̄(1 + Πt )φ eet ,
+where φ > 1 and the monetary policy shock et+1 ∼ Te (· | et ) follows a Markov process. The
+real and nominal interest rates are linked by the Fisher equation
+Rt =
+
+1 + it
+.
+1 + Πt
+
+The government has a fixed supply of debt B outstanding and finances interest payments using
+lump-sum taxes on households, rt B = Tt .
+
+30
+
+Finally, three markets must clear in equilibrium. Goods market clearing requires
+Yt =
+
+Z
+
+θ
+c(b, y)dG (b, y) + Π2t Yt .
+2
+
+so aggregate output is absorbed by consumption and price-adjustment costs. Labor market
+clearing implies
+Lt =
+
+Z
+
+and the bond market clears when
+B=
+
+n(b, y)dG (b, y),
+Z
+
+b dG (b, y),
+
+where we assume that bonds are in fixed positive supply B. The definition of competitive
+equilibrium is standard.
+Firm Policy Gradient Method for the Phillips Curve. The price-setting block introduces an
+additional difficulty relative to the Huggett and Krusell-Smith models: Firm optimality gives
+rise to the forward-looking Phillips curve (23). Standard approaches typically parameterize the
+conditional expectation term in Equation (23) and solve a non-trivial fixed point for the law of
+motion of inflation; see for example Kase et al. (2024); Fernández-Villaverde et al. (2024b).
+By contrast, we treat the firm problem exactly as we treat the household problem and solve
+it using the same SPG method. In practice, this means that we represent the firm’s inflation
+policy as a function of individual firm states, aggregate shocks, and prices that are payoff
+relevant: Πt = Π(wt , zt ). All policy functions are updated simultaneously. Households and
+firms thus learn jointly from the same simulated trajectories, and there is no separate fixedpoint step for equilibrium expectations.
+A detailed description of the implementation is provided in Appendix A.3. Here we simply
+note that, in our experiments, this symmetric treatment of households and firms has very good
+convergence properties. As Table 1 shows, solving the HANK model with the forward-looking
+Phillips curve is only mildly more costly than solving the baseline Huggett model, despite the
+added forward-looking structure in the firm block.
+Calibration. A time period corresponds to a year, with β = 0.95. Preferences are CRRA and
+separable in consumption and labor, u(c, n) = 1−1 σ c1−σ − 1+1 η n1+η , with coefficient of relative
+risk aversion σ = 1 implying log utility over consumption, and inverse Frisch elasticity η = 1.
+On the production side, we set the elasticity of substitution across intermediate goods to
+ε = 10 and the Rotemberg adjustment cost parameter to θ = 100. We set the Taylor rule
+coefficient to φ = 1.5, and we set the fixed government bond supply to B = 5.
+This economy features three shocks: one idiosyncratic and two aggregate. For households’
+idiosyncratic income process, we use the same AR(1) specification and parameterization as in
+the Huggett model so that cross-sectional heterogeneity is directly comparable across applications. Aggregate risk comprises the TFP process zt and the monetary policy shock et , both
+following AR(1) processes. We set their persistence to ρz = ρe = 0.9 and their innovation
+
+31
+
+volatilities to νz = 0.07 and νe = 0.002, respectively. We use a standard Tauchen procedure to
+discretize all three processes on finite grids and report all remaining details in Appendix A.
+Numerical Results.
+
+Figure 10 reports the optimal policy functions for households and firms
+
+in the HANK model. Panels (a) and (b) show household consumption and labor supply policies, while Panel (c) displays the firm’s inflation policy. For each policy, we plot the point
+estimate together with confidence bands obtained from 10 independent training runs with
+N = 512 simulated trajectories each.
+1.8
+
+y = 0.55, r = 0.026, w = 0.88
+y = 1.00, r = 0.026, w = 0.88
+y = 1.82, r = 0.026, w = 0.88
+
+1.4
+
+1.4
+1.2
+1.0
+
+1.2
+1.0
+0.8
+
+0.8
+
+0.6
+
+0.6
+
+0.4
+0
+
+5
+
+10
+
+15
+
+y = 0.55, r = 0.026, w = 0.88
+y = 1.00, r = 0.026, w = 0.88
+y = 1.82, r = 0.026, w = 0.88
+
+1.6
+
+Labor supply n
+
+Consumption c
+
+1.6
+
+20
+
+Wealth b
+
+25
+
+30
+
+35
+
+0
+
+(a) Consumption policy
+
+5
+
+10
+
+15
+
+20
+
+Wealth b
+
+25
+
+30
+
+35
+
+40
+
+(b) Labor supply policy
+w = 0.87
+w = 0.89
+w = 0.91
+
+0.02
+
+Inflation
+
+0.01
+0.00
+0.01
+0.02
+0.2
+
+0.1
+
+0.0
+
+log TFP log(z)
+
+0.1
+
+0.2
+
+(c) Inflation policy
+
+Figure 10: Household and Firm Policy Functions in HANK
+Panel (a) shows that consumption is increasing and concave in wealth and increasing in
+idiosyncratic labor productivity, as standard theory would suggest. Panel (b) shows the corresponding labor supply policy, which is decreasing and convex in wealth and increasing in
+labor productivity: richer households work less at the margin, while high-productivity households supply more labor.
+Panel (c) displays the firm’s inflation policy function. It is decreasing and almost linear in
+log aggregate productivity and increasing in marginal cost. In particular, positive supply (TFP)
+shocks lower marginal cost and induce lower inflation, consistent with the New Keynesian
+Phillips curve (23).
+Across all three panels, the confidence bands are tight over the bulk of the wealth distribution and widen somewhat only in the far tails, where states are rarely visited in simulation.
+The firm’s policy is the most challenging to learn — reflected in somewhat wider confidence
+bands — but remains well behaved and economically sensible. Overall, Figure 10 suggests
+that our SPG method recovers accurate policy functions in this richer HANK environment.
+32
+
+Figure 11 reports simulated time series for the HANK model. Panels (a) and (b) display the
+two aggregate shocks: log TFP zt and the monetary policy shock et . Panels (c)-(f) then show
+the induced time series for the real interest rate, aggregate consumption, aggregate savings,
+and inflation.
+0.20
+
+Trajectory 1
+Trajectory 2
+
+0.00
+0.05
+
+Interest Rate r
+
+Monetary shock e
+
+0.05
+
+0.10
+
+0.002
+0.000
+0.002
+
+0.15
+0
+
+20
+
+40
+
+Time
+
+60
+
+80
+
+100
+
+0
+
+Trajectory 1
+Trajectory 2
+
+20
+
+40
+
+Time
+
+60
+
+80
+
+0.95
+0.90
+80
+
+100
+
+(d) Aggregate consumption C
+
+40
+
+Time
+
+60
+
+80
+
+100
+
+Trajectory 1
+Trajectory 2
+
+0.02
+0.01
+
+5.02
+5.00
+4.98
+
+0.00
+0.01
+
+4.96
+
+0.02
+
+4.92
+
+Time
+
+20
+
+(c) Interest rate r
+
+4.94
+60
+
+0
+
+Inflation
+
+Aggregate saving S
+
+1.00
+
+40
+
+0.02
+
+100
+
+Trajectory 1
+Trajectory 2
+Total assets B
+
+5.06
+5.04
+
+20
+
+0.03
+
+(b) Monetary shock e
+
+1.05
+
+0
+
+0.04
+
+0.01
+
+(a) log TFP log(z)
+
+Aggregate consumption C
+
+Trajectory 1
+Trajectory 2
+
+0.05
+
+0.004
+
+0.10
+
+log TFP log(z)
+
+0.006
+
+Trajectory 1
+Trajectory 2
+
+0.15
+
+0
+
+20
+
+40
+
+Time
+
+60
+
+80
+
+100
+
+0
+
+(e) Aggregate saving S
+
+20
+
+40
+
+Time
+
+60
+
+80
+
+100
+
+(f) Inflation Π
+
+Figure 11: Simulated Trajectories in HANK
+Aggregate consumption in Panel (d) moves procyclically with productivity: positive TFP
+shocks raise Yt and, through higher labor income and lower marginal costs, also increase Ct .
+Inflation in Panel (f) is countercyclical with respect to TFP, consistent with the Phillips curve
+(23): favorable supply shocks reduce marginal costs and put downward pressure on inflation.
+In our calibration macro aggregates appear more sensitive to TFP innovations than to monetary shocks.
+Panel (e) plots households’ aggregate demand for bonds, together with the fixed supply
+B = 5. Asset demand fluctuates tightly around the supply level, and deviations from the
+horizontal supply line measure residuals in the bond market clearing condition. On average,
+the relative absolute deviation of aggregate demand from supply is 0.22%. These residuals
+primarily reflect the use of linear interpolation in solving for market-clearing prices.
+
+5
+
+Conclusion
+
+We develop a new structural reinforcement learning (SRL) approach to formulating and globally solving heterogeneous agent models with aggregate risk. We replace the cross-sectional
+distribution with low-dimensional prices as state variables and let agents compute price expectations directly from simulated paths. Our approach differs from standard RL in that we
+assume that agents have structural knowledge about the dynamics of their own individual
+
+33
+
+states (e.g. their budget constraint and idiosyncratic income process). Our structural policy
+gradient (SPG) algorithm sidesteps the Master equation and efficiently handles heterogeneous
+agent models traditional methods struggle with, like those with nontrivial market-clearing
+conditions. By imposing that policy functions depend only on current prices (or a short price
+history) we keep the state space low-dimensional so that we can work with a grid-based (tabular) approach rather than deep neural networks.
+We implement our method in JAX and conduct computational experiments for three benchmark models in macroeconomics – the Huggett (1993) model, the Krusell and Smith (1998)
+model, and a one-asset HANK model with sticky prices. In all three cases, the SPG algorithm
+converges in only a few minutes. In the Krusell-Smith model, the resulting policies are close
+to those obtained from alternative global solutions of the rational expectations equilibrium.
+Allowing agents to condition on a longer history of lagged prices hardly moves the solution,
+indicating that much of the relevant information for forecasting future prices is already contained in current prices. In the HANK model, we show how the same approach can be used
+symmetrically on the household and firm sides to globally solve the forward-looking New
+Keynesian Phillips curve.
+The core idea of our approach – that agents form price expectations by sampling – could, in
+principle, serve as a building block for an empirically realistic theory of expectations formation
+in macroeconomics (which the algorithm in this paper is not). The plausibility of RL-based approaches is supported by evidence that reinforcement learning underpins a substantial share
+of human and animal learning.26 To develop such an RL-based theory of expectations formation would require several modifications to our SRL method. First, the algorithm would need
+to be converted to a fully online, incremental RL algorithm, with agents updating policies
+and value estimates continuously while interacting with their environment, rather than only
+after observing N price trajectories of length T. Second, the assumption that agents sample
+equilibrium prices in an unbiased way would likely need to be relaxed. Empirical evidence
+suggests that people disproportionately weight certain personal experiences (e.g. Malmendier
+and Nagel, 2011, 2015), so incorporating biased or experience-weighted sampling would be
+more realistic. Third, our SRL agents form price expectations in a model-free manner; this
+may be too simplistic and one could instead treat prices using a model-based RL approach.
+
+References
+Achdou, Yves, Jiequn Han, Jean-Michel Lasry, Pierre-Louis Lions, and Benjamin Moll, “Income and Wealth Distribution in Macroeconomics: A Continuous-Time Approach,” The Review of Economic Studies, 04 2021, 89 (1), 45–86.
+Ahn, SeHyoun, Greg Kaplan, Benjamin Moll, Thomas Winberry, and Christian Wolf,
+“When Inequality Matters for Macro and Macro Matters for Inequality,” NBER Macroeconomics Annual, 2018, 32 (1), 1–75.
+
+26 See, for example, Niv (2009), Glimcher (2011), Caplin and Dean (2008), Glimcher et al. (2013), Gershman and
+
+Daw (2017), and Barberis and Jin (2023).
+
+34
+
+Aiyagari, S. Rao, “Uninsured Idiosyncratic Risk and Aggregate Saving,” The Quarterly Journal
+of Economics, August 1994, 109 (3), 659–84.
+Auclert, Adrien, Bence Bardóczy, Matthew Rognlie, and Ludwig Straub, “Using the
+Sequence-Space Jacobian to Solve and Estimate Heterogeneous-Agent Models,” Econometrica, September 2021, 89 (5), 2375–2408.
+, Matthew Rognlie, and Ludwig Straub, “Fiscal and Monetary Policy with Heterogeneous
+Agents,” Annual Review of Economics, 2025, 17 (Volume 17, 2025), 539–562.
+, Rodolfo Rigato, Matthew Rognlie, and Ludwig Straub, “Beyond Certainty Equivalence:
+Second-order Dynamics in the Sequence Space,” Presentation slides 2025.
+Azinovic, Marlon, Luca Gaegauf, and Simon Scheidegger, “Deep Equilibrium Nets,” International Economic Review, 2022, 63 (4), 1471–1525.
+Azinovic-Yang, Marlon and Jan Žemlička, “Deep Learning in the Sequence Space,” arXiv
+preprint arXiv:2509.13623, 2025.
+Barberis, Nicholas and Lawrence Jin, “Model-free and Model-based Learning as Joint Drivers
+of Investor Behavior,” NBER Working Papers 31081 March 2023.
+Bilal, Adrien, “Solving Heterogeneous Agent Models with the Master Equation,” NBER Working Papers 31103, National Bureau of Economic Research 2023.
+Bradbury, James, Roy Frostig, Peter Hawkins, Matthew James Johnson, Chris Leary, Dougal
+Maclaurin, George Necula, Adam Paszke, Jake VanderPlas, Skye Wanderman-Milne, and
+Qiao Zhang, “JAX: composable transformations of Python+NumPy programs,” 2018.
+Branch, William A., “Restricted Perceptions Equilibria and Learning in Macroeconomics,”
+Post Walrasian Macroeconomics: Beyond the Dynamic Stochastic General Equilibrium Model. Cambridge University Press, New York, 2006, pp. 135–160.
+Bray, Margaret, “Learning, Estimation, and the Stability of Rational Expectations,” Journal of
+Economic Theory, April 1982, 26 (2), 318–339.
+Calvano, Emilio, Giacomo Calzolari, Vincenzo Denicolo, and Sergio Pastorello, “Artificial
+intelligence, algorithmic pricing, and collusion,” American Economic Review, 2020, 110 (10),
+3267–3297.
+Caplin, Andrew and Mark Dean, “Dopamine, Reward Prediction Error, and Economics,” The
+Quarterly Journal of Economics, 2008, 123 (2), 663–701.
+Cardaliaguet, Pierre, François Delarue, Jean-Michel Lasry, and Pierre-Louis Lions, The Master Equation and the Convergence Problem in Mean Field Games, Vol. 201 of Annals of Mathematics
+Studies, Princeton University Press, 2019.
+Chen, Mingli, Andreas Joseph, Michael Kumhof, Xinlei Pan, and Xuan Zhou, “Deep Reinforcement Learning in a Monetary Model,” 2023.
+Cho, In-Koo and Thomas J. Sargent, Self-confirming Equilibria, Palgrave Macmillan UK, December 2016.
+de la Barrera, Marc and Tim de Silva, “Model-Agnostic Dynamic Programming,” Working
+Paper, Stanford University 2024.
+DeepSeek-AI, “DeepSeek-R1: Incentivizing Reasoning Capability in LLMs via Reinforcement
+Learning,” 2025.
+35
+
+Den Haan, Wouter J., “Heterogeneity, Aggregate Uncertainty, and the Short-Term Interest
+Rate,” Journal of Business & Economic Statistics, October 1996, 14 (4), 399–411.
+, Kenneth L. Judd, and Michel Juillard, “Computational suite of models with heterogeneous agents: Incomplete markets and aggregate uncertainty,” Journal of Economic Dynamics
+and Control, 2010, 34 (1), 1–3.
+Dou, Winston Wei, Itay Goldstein, and Yan Ji, “AI-powered trading, algorithmic collusion,
+and price efficiency,” 2025.
+Duarte, Victor, Diogo Duarte, and Dejanir H Silva, “Machine Learning for Continuous-Time
+Finance,” The Review of Financial Studies, 2024, 37 (11), 3217–3271.
+Erev, Ido and Alvin E. Roth, “Learning in Extensive-Form Games: Experimental Data and
+Simple Dynamic Models in the Intermediate Term,” Games and Economic Behavior, 1995, 8
+(1), 164–212.
+and , “Predicting How People Play Games: Reinforcement Learning in Experimental
+Games with Unique, Mixed Strategy Equilibria,” American Economic Review, 1998, pp. 848–
+881.
+Evans, George W. and Seppo Honkapohja, Learning and Expectations in Macroeconomics,
+Princeton University Press, 2001.
+Farmer, Leland E. and Alexis Akira Toda, “Discretizing nonlinear, non-Gaussian Markov processes with exact conditional moments,” Quantitative Economics, 2017, 8 (2), 651–683.
+Favilukis, Jack, Sydney C. Ludvigson, and Stijn Van Nieuwerburgh, “The Macroeconomic
+Effects of Housing Wealth, Housing Finance, and Limited Risk Sharing in General Equilibrium,” Journal of Political Economy, 2017, 125 (1), 140–223.
+Fernández-Villaverde, Jesús, Galo Nuño, and Jesse Perla, “Taming the Curse of Dimensionality: Quantitative Economics with Deep Learning,” NBER Working Papers 33117, National
+Bureau of Economic Research November 2024.
+, , and Samuel Hurtado, “Financial Frictions and the Wealth Distribution,” Econometrica,
+May 2023, 91 (3), 869–901.
+, , Joël Marbet, and Omar Rachedi, “Inequality and the Zero Lower Bound,” Journal of
+Econometrics, 2024, p. 105819.
+Freeman, C. Daniel, Erik Frey, Anton Raichuk, Sertan Girgin, Igor Mordatch, and Olivier
+Bachem, “Brax – A Differentiable Physics Engine for Large Scale Rigid Body Simulation,”
+2021.
+Fudenberg, Drew and David K. Levine, “Whither Game Theory? Towards a Theory of Learning in Games,” Journal of Economic Perspectives, 2016, 30 (4), 151–170.
+Gabriele, Federico, Aldo Glielmo, and Marco Taboga, “Heterogeneous RBCs via deep multiagent reinforcement learning,” 2025.
+Gershman, Samuel J. and Nathaniel D. Daw, “Reinforcement Learning and Episodic Memory
+in Humans and Animals: An Integrative Framework,” Annual Review of Psychology, 2017, 68
+(Volume 68, 2017), 101–128.
+Giusto, Andrea, “Adaptive Learning and Distributional Dynamics in an Incomplete Markets
+Model,” Journal of Economic Dynamics and Control, 2014, 40, 317–333.
+36
+
+Glimcher, Paul W., “Understanding Dopamine and Reinforcement Learning: The Dopamine
+Reward Prediction Error Hypothesis,” Proceedings of the National Academy of Sciences, 2011,
+108 (supplement 3), 15647–15654.
+, Colin Camerer, Ernst Fehr, and Russell Poldrack, Neuroeconomics: Decision Making and the
+Brain Academic Press, Academic Press, 2013.
+Gomes, Francisco and Alexander Michaelides, “Asset Pricing with Limited Risk Sharing and
+Heterogeneous Agents,” Review of Financial Studies, January 2008, 21 (1), 415–448.
+Gopalakrishna, Goutham, Zhouzhou Gu, and Jonathan Payne, “Asset Pricing, Participation
+Constraints, and Inequality,” Working Paper 2024.
+Gu, Zhouzhou, Mathieu Laurière, Sebastian Merkel, and Jonathan Payne, “Global Solutions
+to Master Equations for Continuous Time Heterogeneous Agent Macroeconomic Models,”
+arXiv preprint arXiv:2406.13726, 2024.
+Guarda, Sebastian, “Narrow and Short Beliefs in Macroeconomics with Heterogeneous
+Agents,” Technical Report, Princeton University November 2025. Working paper, available
+at https://files.sebastianguarda.com/JMP.pdf.
+Han, Jiequn, Yucheng Yang, and Weinan E, “DeepHAM: A Global Solution Method For Heterogeneous Agent Models With Aggregate Shocks,” arXiv preprint arXiv:2112.14377, 2021.
+Hausknecht, Matthew and Peter Stone, “Deep Recurrent Q-Learning for Partially Observable
+MDPs,” 2017.
+Heathcote, Jonathan, Kjetil Storesletten, and Giovanni L. Violante, “Quantitative Macroeconomics with Heterogeneous Households,” Annual Review of Economics, 05 2009, 1 (1), 319–
+354.
+Hu, Yuanming, Luke Anderson, Tzu-Mao Li, Qi Sun, Nathan Carr, Jonathan Ragan-Kelley,
+and Frédo Durand, “DiffTaichi: Differentiable Programming for Physical Simulation,” 2020.
+Huang, Ji, “Breaking the Curse of Dimensionality in Heterogeneous-Agent Models: A Deep
+Learning-Based Probabilistic Approach,” 2023.
+Huggett, Mark, “The risk-free rate in heterogeneous-agent incomplete-insurance economies,”
+Journal of Economic Dynamics and Control, 1993, 17 (5-6), 953–969.
+Jacobson, Margaret M., “Beliefs, Aggregate Risk, and the U.S. Housing Boom,” Technical Report 2025.
+Kahou, Mahdi Ebrahimi, Jesús Fernández-Villaverde, Jesse Perla, and Arnav Sood, “Exploiting symmetry in high-dimensional dynamic programming,” Technical Report 2021.
+Kaplan, Greg, Kurt Mitman, and Giovanni L. Violante, “The Housing Boom and Bust: Model
+Meets Evidence,” Journal of Political Economy, 2020, 128 (9), 3285–3345.
+Kase, Hanno, Leonardo Melosi, and Matthias Rottner, “Estimating Nonlinear Heterogeneous
+Agent Models with Neural Networks,” Working Paper, FRB Chicago 2024.
+Krueger, D., K. Mitman, and F. Perri, “Chapter 11 - Macroeconomics and Household Heterogeneity,” in John B. Taylor and Harald Uhlig, eds., John B. Taylor and Harald Uhlig, eds., Vol. 2
+of Handbook of Macroeconomics, Elsevier, 2016, pp. 843–921.
+Krusell, Per and Anthony A. Smith, “Income and wealth heterogeneity, portfolio choice, and
+equilibrium asset returns,” Macroeconomic dynamics, 1997, 1 (2), 387–422.
+37
+
+and , “Income and Wealth Heterogeneity in the Macroeconomy,” Journal of Political Economy, October 1998, 106 (5), 867–896.
+and , Quantitative Macroeconomic Models with Heterogeneous Agents Econometric Society
+Monographs, Cambridge University Press, 2006.
+Lasry, Jean-Michel and Pierre-Louis Lions, “Mean field games,” Japanese Journal of Mathematics, 2007, 2, 229–260.
+Laurière, Mathieu, Sarah Perrin, Julien Pérolat, Sertan Girgin, Paul Muller, Romuald Élie,
+Matthieu Geist, and Olivier Pietquin, “Learning in Mean Field Games: A Survey,” 2024.
+, , Sertan Girgin, Paul Muller, Ayush Jain, Theophile Cabannes, Georgios Piliouras,
+Julien Perolat, Romuald Elie, Olivier Pietquin, and Matthieu Geist, “Scalable Deep Reinforcement Learning Algorithms for Mean Field Games,” in Kamalika Chaudhuri, Stefanie
+Jegelka, Le Song, Csaba Szepesvari, Gang Niu, and Sivan Sabato, eds., Proceedings of the
+39th International Conference on Machine Learning, Vol. 162 of Proceedings of Machine Learning
+Research PMLR 17–23 Jul 2022, pp. 12078–12095.
+Lee, Donghoon and Kenneth I. Wolpin, “Intersectoral Labor Mobility and the Growth of the
+Service Sector,” Econometrica, 2006, 74 (1), 1–46.
+Llull, Joan, “Immigration, Wages, and Education: A Labour Market Equilibrium Structural
+Model,” The Review of Economic Studies, 2018, 85 (3), 1852–1896.
+Maliar, Lilia and Serguei Maliar, “Deep learning: Solving HANC and HANK models in the
+absence of Krusell-Smith aggregation,” Available at SSRN 3758315, 2020.
+, , and Pablo Winant, “Deep Learning for Solving Dynamic Economic Models,” Journal of
+Monetary Economics, 2021, 122 (C), 76–101.
+Malmendier, Ulrike and Stefan Nagel, “Depression Babies: Do Macroeconomic Experiences
+Affect Risk Taking?,” The Quarterly Journal of Economics, 2011, 126 (1), 373–416.
+and , “Learning from Inflation Experiences,” The Quarterly Journal of Economics, October
+2015, 131 (1), 53–87.
+Marcet, Albert and Thomas J. Sargent, “Convergence of Least Squares Learning Mechanisms
+in Self-referential Linear Stochastic Models,” Journal of Economic Theory, August 1989, 48 (2),
+337–368.
+Mnih, Volodymyr, Koray Kavukcuoglu, David Silver, Andrei A. Rusu, Joel Veness, Marc G.
+Bellemare, Alex Graves, Martin Riedmiller, Andreas K. Fidjeland, Georg Ostrovski, Stig
+Petersen, Charles Beattie, Amir Sadik, Ioannis Antonoglou, Helen King, Dharshan Kumaran, Daan Wierstra, Shane Legg, and Demis Hassabis, “Human-level control through
+deep reinforcement learning,” Nature, Feb 2015, 518 (7540), 529–533.
+Moll, Benjamin, “The Trouble with Rational Expectations in Heterogeneous Agent Models: A
+Challenge for Macroeconomics,” 2025.
+Murphy, Kevin, “Reinforcement Learning: An Overview,” 2025.
+Niv, Yael, “Reinforcement Learning in the Brain,” Journal of Mathematical Psychology, 2009, 53
+(3), 139–154. Special Issue: Dynamic Decision Making.
+OpenAI, “OpenAI o1 System Card,” 2024.
+
+38
+
+Payne, Jonathan, Adam Rebei, and Yucheng Yang, “Deep Learning for Search and Matching
+Models,” 2024.
+Quadrini, Vincenzo and José-Vı́ctor Rı́os-Rull, “Inequality in Macroeconomics,” Handbook of
+Income Distribution, 2015, 2, 1229 – 1302.
+Rafailov, Rafael, Archit Sharma, Eric Mitchell, Stefano Ermon, Christopher D. Manning,
+and Chelsea Finn, “Direct Preference Optimization: Your Language Model is Secretly a
+Reward Model,” 2024.
+Raissi, M., P. Perdikaris, and G.E. Karniadakis, “Physics-informed neural networks: A deep
+learning framework for solving forward and inverse problems involving nonlinear partial
+differential equations,” Journal of Computational Physics, 2019, 378, 686–707.
+Robbins, Herbert and Sutton Monro, “A Stochastic Approximation Method,” The Annals of
+Mathematical Statistics, 1951, 22 (3), 400–407.
+Rotemberg, Julio J, “Sticky prices in the United States,” Journal of political economy, 1982, 90 (6),
+1187–1211.
+Sargent, Thomas J., “Equilibrium with Signal Extraction from Endogenous Variables,” Journal
+of Economic Dynamics and Control, 1991, 15 (2), 245–273.
+, The Conquest of American Inflation, Princeton University Press, 1999.
+, “HAOK and HANK Models,” Unpublished manuscript, 2023. Available at http://www.
+tomsargent.com/research/HAOK_HANK.pdf.
+and John Stachurski, “Quantitative Economics with JAX,” 2025. Available at https://jax.
+quantecon.org/intro.html.
+Schaab, Andreas, “Micro and Macro Uncertainty,” Working Paper, UC Berkeley 2020.
+Silver,
+David,
+Introduction to Reinforcement Learning,
+DeepMind x UCL,
+Video
+recordings
+available
+at
+https://www.youtube.com/playlist?list=
+PLqYmG7hTraZDM-OYHWgPebj2MfCFzFObQ, 2015.
+, Aja Huang, Chris J. Maddison, Arthur Guez, Laurent Sifre, George van den Driessche,
+Julian Schrittwieser, Ioannis Antonoglou, Veda Panneershelvam, Marc Lanctot, Sander
+Dieleman, Dominik Grewe, John Nham, Nal Kalchbrenner, Ilya Sutskever, Timothy Lillicrap, Madeleine Leach, Koray Kavukcuoglu, Thore Graepel, and Demis Hassabis, “Mastering the game of Go with deep neural networks and tree search,” Nature, Jan 2016, 529
+(7587), 484–489.
+, Julian Schrittwieser, Karen Simonyan, Ioannis Antonoglou, Aja Huang, Arthur Guez,
+Thomas Hubert, Lucas Baker, Matthew Lai, Adrian Bolton, Yutian Chen, Timothy Lillicrap, Fan Hui, Laurent Sifre, George van den Driessche, Thore Graepel, and Demis Hassabis, “Mastering the Game of Go without Human Knowledge,” Nature, Oct 2017, 550 (7676),
+354–359.
+Storesletten, Kjetil, Chris Telmer, and Amir Yaron, “Asset Pricing with Idiosyncratic Risk
+and Overlapping Generations,” Review of Economic Dynamics, October 2007, 10 (4), 519–548.
+Sutton, Richard S. and Andrew G. Barto, Reinforcement Learning: An Introduction, MIT Press,
+2018.
+
+39
+
+Wu, Zida, Mathieu Lauriere, Matthieu Geist, Olivier Pietquin, and Ankur Mehta,
+“Population-aware Online Mirror Descent for Mean-Field Games with Common Noise by
+Deep Reinforcement Learning,” 2025.
+Xu, Ruitu, Yifei Min, Tianhao Wang, Michael I. Jordan, Zhaoran Wang, and Zhuoran
+Yang, “Finding Regularized Competitive Equilibria of Heterogeneous Agent Macroeconomic Models via Reinforcement Learning,” in Francisco Ruiz, Jennifer Dy, and Jan-Willem
+van de Meent, eds., Proceedings of The 26th International Conference on Artificial Intelligence and
+Statistics, Vol. 206 of Proceedings of Machine Learning Research PMLR 25–27 Apr 2023, pp. 375–
+407.
+Yang, Yaodong, Rui Luo, Minne Li, Ming Zhou, Weinan Zhang, and Jun Wang, “Mean Field
+Multi-Agent Reinforcement Learning,” in Jennifer Dy and Andreas Krause, eds., Proceedings of the 35th International Conference on Machine Learning, Vol. 80 of Proceedings of Machine
+Learning Research PMLR 10–15 Jul 2018, pp. 5571–5580.
+Young, Eric R., “Solving the incomplete markets model with aggregate uncertainty using the
+Krusell–Smith algorithm and non-stochastic simulations,” Journal of Economic Dynamics and
+Control, 2010, 34 (1), 36–41.
+Zhao,
+Shiyu,
+Mathematical
+Foundations
+of
+Reinforcement
+Learning,
+Springer
+Nature,
+available
+at
+https://github.com/MathFoundationRL/
+Book-Mathematical-Foundation-of-Reinforcement-Learning, 2025.
+
+40
+
+Online Appendix
+A
+
+Model Calibration and Hyperparameters
+
+This appendix presents additional model, calibration and implementation details for the applications we solve in Section 4 using our SRL approach. We start with the Huggett (1993)
+application in Appendix A.1, move to the Krusell and Smith (1998) application in Appendix
+A.2, and conclude with the HANK application in Appendix A.3.
+
+A.1
+
+Appendix for Huggett Application
+
+We summarize the calibration we use in Section 4.1 in Table 2. Table 3 summarizes the hyperparameters used to solve the Huggett model with our SRL algorithm. We briefly discuss the
+main choices and their rationale.
+Partial equilibrium specification.
+
+In the general equilibrium Huggett model, the interest
+
+rate is a complicated function of the aggregate state and the cross-sectional distribution. It is
+not Markov. For the partial equilibrium (PE) exercise discussed in Section 4.1, we instead take
+as given an exogenous Markov law of motion for the interest rate rt and let households solve
+their individual problem taking as given this process.
+We model the interest rate as a mean-reverting process with a square-root volatility term.
+In continuous time, this is analogous to a Cox-Ingersoll-Ross (CIR) or “Feller square-root”
+process, which ensures positivity of the interest rate. In discrete time, our PE price process is
+specified as
+rt+1 = (1 − ρr )r + ρr rt + νr
+
+q
+
+max{rt , 0} · ε r,t
+
+where
+
+ε r,t ∼ N (0, 1)
+
+where r is the long-run mean level of the interest rate, ρr its autocorrelation, and νr the innovation volatility. The parameter values we use are reported in Table 2 and are chosen so that
+the unconditional distribution of interest rates as well as the implied aggregate bond holdings
+in PE are broadly consistent with general equilibrium in the Huggett calibration.
+The idiosyncratic income process y in PE is the same as in the GE model, a three-point
+discretization of a log AR(1) with persistence ρy and volatility νy , as reported in Table 2. Thus,
+the only difference between PE and GE is that in PE the household takes rt as an exogenous
+Markov process, while in GE it is determined endogenously from bond market clearing.
+For the numerical implementation, we discretize the PE interest rate process on a grid described in Table 3. This grid is constructed using the CIR discretization method in Farmer and
+Toda (2017), which is designed for square-root processes and preserves positivity. Together
+with the income grid for y, this yields a fully specified PE environment in which we can solve
+
+41
+
+Parameter
+β
+σ
+ρy
+νy
+ρz
+νz
+B
+b
+r
+ρr
+νr
+
+Description
+Discount factor
+Coefficient of relative risk aversion
+Autocorrelation of labor income
+Variance parameter of labor income
+Persistence of AR(1) for zt (log TFP)
+Volatility of AR(1) for zt (log TFP)
+Total bond supply
+Borrowing constraint
+Mean interest rate (PE)
+Autocorrelation of interest rate (PE)
+Volatility of interest rate (PE)
+
+Value
+0.96
+2
+0.6
+0.2
+0.9
+0.02
+0
+-1
+0.038
+0.8
+0.02
+
+Table 2: Huggett model calibration
+the household problem using both our SPG algorithm and a conventional VFI method, as described in the main text.
+Discretization. The individual state (b, y) consists of bond holdings b and idiosyncratic income y. We discretize bonds on a one-dimensional grid with nb = 200 points and an upper
+bound bmax = 50. The income process y takes ny = 3 possible values. On the aggregate side,
+the two key state variables are the interest rate rt and aggregate income zt . We approximate
+rt on a grid with nr = 20 points covering the interval [r L , r H ] = [0.01, 0.06]. This range is
+chosen to comfortably contain all equilibrium interest rate realizations observed in our simulations while avoiding an unnecessarily large grid. Aggregate productivity zt is discretized on
+a grid with nz = 30 points using a standard Tauchen procedure. These choices strike a balance between accuracy and computational cost. They are fine enough to capture the relevant
+curvature in individual policies and the dependence of prices on the aggregate state.
+Simulation horizon and truncation. We approximate lifetime utility by truncating the infinite sum in (15) at a finite horizon Ttrunc . We choose Ttrunc to ensure that the tail of the
+discounted utility is negligible relative to a user-specified tolerance level etrunc ,
+n
+o
+Ttrunc = min T : β T < etrunc .
+In the baseline Huggett experiment, we use etrunc = 10−3 and obtain Ttrunc = 170, i.e. the
+contribution of periods beyond Ttrunc is bounded by 10−3 in present-value terms. To avoid
+numerical issues when wealth is very low, we also impose a minimal consumption floor cmin =
+10−3 . This has no discernible effect on the economic results but prevents the utility function
+from being evaluated at (or extremely close to) zero.
+Training schedule and learning rate. We train the SPG algorithm with an exponentially decaying learning rate. Let lrini denote the initial learning rate and lrdecay ∈ (0, 1) the decay
+
+42
+
+Parameter
+nb
+bmax
+ny
+nr
+rL
+rH
+nz
+cmin
+Ttrunc
+etrunc
+Nepoch
+Nwarm-up
+lrini
+lrdecay
+lrsche
+Nsample
+econverge
+
+Description
+Number of b grid points
+Upper bound of b grid
+Number of y grid points
+Number of r grid points
+Lower bound of r grid
+Upper bound of r grid
+Number of z grid points
+Minimum consumption
+Truncation horizon for simulations
+Truncation threshold
+Maximum number of parameter updates
+Number of warm-up epochs
+Initial learning rate
+Learning rate decay rate
+Learning-rate scheduler
+Batch size (trajectories per update)
+Convergence threshold
+
+Value
+200
+50
+3
+20
+0.01
+0.06
+30
+10−3
+170
+10−3
+1000
+50
+10−3
+0.5
+exponential
+512
+3 × 10−4
+
+Table 3: Hyperparameters for solving the Huggett model
+factor. The learning rate at iteration t is given by
+0
+
+t
+lrt = lrini · lrdecay
+,
+
+where
+
+t0 =
+
+max{t − Nwarm-up , 0}
+,
+Nepoch − Nwarm-up
+
+so that lrt is held constant during an initial “warm-up” phase of length Nwarm-up and then
+decays smoothly to a lower value by the final epoch Nepoch . In the Huggett application, we
+set Nepoch = 1000, Nwarm-up = 50, lrini = 10−3 , and lrdecay = 0.5, and we use an exponential
+scheduler (denoted by lrsche in Table 3). We declare convergence when the change in the policy
+parameters across epochs falls below the threshold econverge = 3 × 10−4 .
+Sampling, batching, and memory constraints.
+
+Due to GPU memory constraints, we do not
+
+use all simulated data to update the policy in each iteration. Instead, we sample data in minibatches. In each update, the effective data size is Nsample × Nupdate , where Nsample denotes
+the number of simulated trajectories per batch (we set Nsample = 512 in the baseline Huggett
+experiment) and Nupdate the number of time steps used from each trajectory for the gradient
+update. This mini-batching keeps memory requirements manageable while preserving enough
+variation in the data to obtain stable gradient estimates.
+Initialization and warm-up. We initialize the policy as described in Footnote 20 to guarantee
+that the initial aggregate savings schedule is at least weakly responsive to the interest rate. The
+training process is then split into two phases. During the warm-up phase of length Nwarm-up , we
+fix the cross-sectional distribution of agents at some simple initial guess g0 and do not update
+it. In this phase, the sole objective is to move the policy away from its crude initial guess
+and toward a reasonable neighborhood of the eventual solution. Keeping g fixed prevents the
+
+43
+
+Parameter
+β
+σ
+b
+ρy
+νy
+a
+δ
+ρz
+νz
+
+Description
+Discount factor
+Utility parameter
+Borrowing constraint
+Autocorrelation of idiosyncratic shock
+Volatility of idiosyncratic shock
+Capital share
+Capital depreciation rate
+Persistence of AR(1) for zt (log TFP)
+Volatility of AR(1) for zt (log TFP)
+
+Value
+0.95
+3
+0
+0.6
+0.2
+0.36
+0.08
+0.9
+0.03
+
+Table 4: Krusell–Smith model calibration
+badly informed initial policy from “polluting” the distribution.
+After warm-up, we switch to an adaptive phase in which the distribution is updated endogenously, and which may last up to Nepoch − Nwarm-up epochs ( though convergence typically
+occurs earlier). We use the simulated distribution implied by the most recent policy as the
+initial distribution for each trajectory. In other words, after warm-up, each new batch of trajectories starts from a cross-section that is itself an equilibrium object. This iterative updating of
+the initial distribution ensures that the policy is trained on data drawn from its own induced
+stationary distribution, which is important for the accuracy of the final solution.
+
+A.2
+
+Appendix for Krusell-Smith Application
+
+Calibration. Table 4 summarizes the calibration for the Krusell-Smith model used in Section
+4.2. We use a discount factor of β = 0.95. The utility function is CRRA with a coefficient of
+relative risk aversion σ = 3, and the borrowing constraint is set at b = 0.
+The idiosyncratic income process is modeled as a log AR(1) with autocorrelation ρy = 0.6
+and innovation volatility νy = 0.2, the same specification as in the Huggett model. On the
+production side, we follow the standard Krusell-Smith calibration: the capital share is α =
+0.36, the depreciation rate is δ = 0.08, and aggregate productivity zt follows a log AR(1) with
+persistence ρz = 0.9 and volatility νz = 0.03.
+Discretization and grids.
+
+Table 5 reports the hyperparameters used for the SPG solution of
+
+the Krusell-Smith model. The individual capital state b is discretized on a grid with nb = 200
+points and an upper bound bmax = 100, which is higher than in the Huggett experiment. The
+larger upper bound reflects the fact that, in Krusell-Smith, agents accumulate capital rather
+than unproductive bonds, and the equilibrium wealth distribution is more dispersed. The
+idiosyncratic income state y again takes ny = 3 values.
+The aggregate price vector consists of the interest rate rt and the real wage wt . We approximate the price space on two separate grids: the interest rate is discretized with nr = 30 points
+on [r L , r H ] = [0.02, 0.07], and the wage with nw = 50 points on [w L , w H ] = [0.9, 1.5]. These
+ranges comfortably contain the realizations observed in our simulations and allow the policy
+to respond flexibly to movements in both prices without requiring a prohibitive number of
+
+44
+
+Parameter
+nb
+bmax
+ny
+nr
+rL
+rH
+nw
+wL
+wH
+cmin
+cinit
+Ttrunc
+etrunc
+Nepoch
+Nwarm-up
+lrini
+lrdecay
+lrsche
+Nsample
+econverge
+
+Description
+Number of b grid points
+Upper bound of b grid
+Number of y grid points
+Number of r grid points
+Lower bound of r grid
+Upper bound of r grid
+Number of p2 grid points
+Lower bound of w grid
+Upper bound of w grid
+Minimum consumption
+Initial guess for consumption share
+Truncation horizon for simulations
+Truncation threshold
+Maximum number of parameter updates
+Number of warm-up epochs
+Initial learning rate
+Learning-rate decay rate
+Learning-rate scheduler
+Batch size (trajectories per update)
+Convergence threshold
+
+Value
+200
+100
+3
+30
+0.02
+0.07
+50
+0.9
+1.5
+10−3
+0.5
+90
+10−2
+1000
+50
+5 × 10−4
+0.5
+exponential
+512
+2 × 10−4
+
+Table 5: Hyperparameters for solving the Krusell–Smith model
+grid points.
+Simulation horizon and truncation.
+
+As in the Huggett case, lifetime utility is computed by
+
+truncating the infinite sum at a finite horizon Ttrunc . For Krusell-Smith we set Ttrunc = 90 and
+use a truncation tolerance etrunc = 10−2 , i.e.
+β Ttrunc < etrunc ,
+so that the tail of the discounted utility stream is negligible at the scale of our numerical accuracy. We also impose a minimal consumption level cmin = 10−3 to avoid evaluating utility at
+zero or extremely small consumption levels.
+Training schedule and convergence.
+
+We use the same general training structure as in the
+
+Huggett exercise but with slightly different numerical values. The maximum number of epochs
+is Nepoch = 1000, with Nwarm-up = 50 warm-up epochs during which the learning rate is kept
+constant and the initial distribution is fixed. The learning rate starts at lrini = 5 × 10−4 and
+decays exponentially at rate lrdecay = 0.5 according to the scheduler denoted by lrsche in
+Table 5. As in the Huggett case, the decay is only activated after the warm-up phase. We
+declare convergence when the change in parameters between successive epochs falls below
+econverge = 2 × 10−4 ; in practice, the algorithm typically converges well before hitting the hard
+cap of Nepoch .
+Mini-batching is again used to handle memory constraints and stabilize gradient estimates.
+
+45
+
+Parameter
+β
+σ
+η
+φ
+θ
+e
+R̄
+ρz
+νz
+ρe
+νe
+
+Description
+Discount factor
+Coefficient of relative risk aversion
+Inverse of Frisch elasticity
+Coefficient of Taylor rule
+Price adjustment cost
+Elasticity of substitution
+Target for gross interest rate
+Autocorrelation of aggregate TFP shock
+Volatility of aggregate TFP shock
+Autocorrelation of monetary policy shock
+Volatility of monetary policy shock
+
+Value
+0.975
+1
+1
+1.5
+100
+10
+1.025
+0.9
+0.07
+0.9
+0.002
+
+Table 6: Calibration for the HANK model
+Each update uses Nsample = 512 simulated trajectories, and a fixed number of time steps
+per trajectory, to form the stochastic gradient. This yields a total data size per update of
+Nsample × Nupdate , which we choose to fully utilize the available GPU memory without inducing excessive variance in the gradient.
+Initialization and warm-up.
+
+The warm-up logic mirrors that used in the Huggett application
+
+but is adapted to the two-price environment. During the first Nwarm-up epochs, all trajectories
+are initialized from a cross-sectional distribution that is held fixed, while the policy is being
+updated. After warm-up, we update the cross-sectional distribution based on the most recent policy and allow the learning rate to adjust. The initial conditions for each new set of
+trajectories are drawn from the simulated distribution generated by the most recent policy.
+
+A.3
+
+Appendix for HANK Application
+
+Calibration. Table 6 reports the calibration of the HANK model used in Section 4.3. One
+model period corresponds to a year, and the discount factor is set such that the annual real
+interest rate is in a plausible range; in the baseline we use a discount factor of 0.975. Preferences
+over consumption and labor are CRRA and separable, with coefficient of relative risk aversion
+equal to 1 and inverse Frisch elasticity of labor supply η = 1.
+We follow a standard New Keynesian calibration. Price-setting firms face Rotemberg adjustment costs with parameter θ = 100 and an elasticity of substitution across intermediate
+goods of ε = 10. Monetary policy follows the Taylor rule specified in the main text, with
+coefficient φ = 1.5 on inflation and a gross steady-state real interest rate target R̄ = 1.025.
+Aggregate risk is two-dimensional. TFP zt follows an AR(1) process with persistence ρz =
+0.9 and innovation volatility νz = 0.07. The monetary policy shock et is also AR(1) with the
+same persistence ρe = 0.9 and volatility νe = 0.002. These values are summarized in Table 6
+and are chosen so that both real and nominal variables display non-trivial but stable dynamics
+in the simulations.
+
+46
+
+Parameter
+nb
+bmax
+y
+nr
+rL
+rH
+nw
+wL
+wH
+nz
+ne
+cmin
+cinit
+ninit
+Πinit
+Ttrunc
+etrunc
+Nepoch
+Nwarm-up
+lrini
+lrdecay
+Nsample
+econverge
+
+Description
+Number of b grid points
+Upper bound of b grid
+Number of y grid points
+Number of r grid points
+Lower bound of r grid
+Upper bound of r grid
+Number of p2 grid points
+Lower bound of w grid
+Upper bound of w grid
+Number of z grid points
+Number of e grid points
+Minimum consumption
+Initial guess of consumption share
+Initial guess of labor supply
+Initial guess of inflation
+Truncation horizon for simulations
+Truncation threshold
+Maximum number of parameter updates
+Number of warm-up epochs
+Initial learning rate
+Learning-rate decay rate
+Baseline sampling size
+Convergence threshold
+
+Value
+200
+100
+3
+30
+0.01
+0.04
+30
+0.7
+1.0
+50
+50
+10−3
+0.5
+1.5
+0
+182
+10−2
+1000
+50
+5 × 10−3
+0.5
+512
+2 × 10−3
+
+Table 7: Hyperparameters for solving the HANK model
+Discretization and grids. Table 7 lists the hyperparameters and grid choices for our solution
+of the HANK model. The individual asset state b is discretized on a grid with nb = 200 points
+and an upper bound bmax = 100. The idiosyncratic income state y again takes ny = 3 values,
+using the same discretization as in the Huggett and Krusell-Smith applications for ease of
+comparison.
+The aggregate state combines a two-dimensional price vector (rt , wt ) with the two exogenous shocks zt and et . We approximate the real interest rate on a grid with nr = 30 points
+over the interval [r L , r H ] = [0.01, 0.04]. The real wage is discretized with nw = 30 points on
+
+[w L , w H ] = [0.7, 1.0]. The ranges are chosen to cover comfortably the realizations observed in
+equilibrium simulations, while keeping the price grids small enough for efficient training.
+For the aggregate shocks, we use nz = 50 grid points for log TFP zt and ne = 50 points
+for the monetary shock et . Both grids are obtained by discretizing the respective AR(1) processes with a standard Tauchen method. The relatively fine grids for (zt , et ) help the algorithm
+capture the interaction between real and nominal disturbances in the HANK model.
+Simulation horizon, truncation, and initial guesses. The HANK model combines persistence in both TFP and monetary shocks with sluggish price adjustment. To accommodate this
+accurately, we use a longer truncation horizon Ttrunc = 182 periods and a truncation tolerance
+
+47
+
+etrunc = 10−2 , which implies
+β Ttrunc < etrunc ,
+so that the contribution of periods beyond Ttrunc is negligible at the scale of our numerical
+accuracy. As in the other applications, we impose a minimal consumption level cmin = 10−3 to
+avoid evaluating the utility function at zero consumption.
+The HANK environment includes both consumption-saving and labor-supply decisions,
+as well as firm price-setting. We initialize these policy functions using simple guess rules;
+for cinit , we set an initial constant consumption share of total cash-in-hand, a constant ninit
+sets an initial level of hours worked, and Πinit = 0 initializes inflation. These initial values
+are deliberately crude and their sole purpose is to place the policy in a reasonable region of
+the parameter space before learning from simulated data. In practice, the final solution is
+insensitive to these initial guesses once training has converged.
+Training and convergence. The remaining training hyperparameters follow the logic of the
+Huggett and Krusell-Smith applications. We use a baseline batch size of Nsample = 512 simulated trajectories per update, chosen to saturate GPU memory without generating excessive
+variance in the policy gradient. The convergence threshold is set at econverge = 2 × 10−3 for
+the HANK model, which reflects the greater complexity of the joint household-firm problem
+and the fact that small changes in the policy parameters can translate into larger differences in
+aggregate dynamics.
+Other aspects of the training schedule — notably the total number of epochs, the length of
+the warm-up phase, and the learning-rate schedule — are chosen in line with the Krusell-Smith
+specification discussed in Appendix A.2 and are not repeated here. In practice, the HANK
+model converges somewhat more slowly than Huggett and Krusell-Smith but still within a
+few minutes on a single GPU, as reported in Table 1 in the main text.
+
+48
+
+
