@@ -1,0 +1,2043 @@
+
+\section{Computational Experiments}
+
+In this section we report computational experiments for three benchmark economies: the
+
+Huggett model, the classic Krusell and Smith (1998) model, and a one-account
+
+heterogeneous agent New Keynesian (HANK) model with nominal rigidities.
+
+We implement all three models in JAX and run them on a single NVIDIA A100 GPU on
+
+Google Colab. Table 1 summarizes performance. Since our algorithm is stochastic and uses
+
+Monte Carlo simulations, we run our algorithm 10 times for each specification and report
+
+averages across runs. The first column shows the average number of epochs until convergence,
+
+and the last column the corresponding average time for a single run.
+
+Model
+
+Average converge epoch
+
+\# Runs
+
+Average Runtime (sec)
+
+Krusell-Smith
+
+438.4
+
+56.55
+
+Huggett with agg. shocks
+
+480.6
+
+75.29
+
+HANK with agg. shocks
+
+496.5
+
+199.53
+
+Partial equilibrium (Huggett)
+
+289.3
+
+39.49
+
+Table 1: Runtimes
+
+Solving the Krusell-Smith model takes about 55 seconds, in line with other global solution
+
+methods in the literature. By contrast, the Huggett and HANK models are typically viewed
+
+as more challenging because they feature non-trivial market clearing conditions: standard approaches nest an inner loop that repeatedly solves for prices until markets clear. Nevertheless,
+
+our method solves the Huggett model in 75 seconds and the HANK model in about 3 minutes.
+
+Finally, we also compare the cost of computing the model’s general equilibrium (GE) to
+
+that of computing the corresponding partial equilibrium (PE) problem (see below). We find
+
+that, while computing the GE problem takes longer as expected, the difference in runtime
+
+is modest. In the Huggett model, for example, moving from partial to general equilibrium
+
+increases runtime from 39 seconds to 75 seconds. This is because we do not solve general
+
+equilibrium with a nested inner-outer loop that alternates between solving optimal policies
+
+and updating price functions or perceived laws of motion. Instead, prices are learned in an
+
+online fashion: along each simulated path we compute the market-clearing price implied by
+
+current policies, and the policy update uses these realized prices directly.
+
+\subsection{Huggett Model with Aggregate Risk}
+
+We start our computational experiments with the Huggett economy described below.25
+
+Calibration. We interpret one period as a year and set the household discount factor to β =
+
+1− σ
+
+0.96. Preferences are isoelastic u(c) = 1c −σ and we set σ = 2. In the Huggett model, both the
+
+idiosyncratic and the aggregate income components follow log AR(1) processes. We set the
+
+persistence parameters to ρy = 0.6 and ρz = 0.9 and the standard deviations of the innovations
+
+to νy = 0.2 and νz = 0.02. We discretize these processes on finite grids using a standard
+
+Tauchen procedure (details in the Appendix A). Finally, we impose a borrowing limit b = −1
+
+25 Our comparison of runtimes in Table 1 and Figure 4 below make reference to the partial equilibrium problem
+
+of the Huggett economy. We present the details in Appendix A.1.
+
+and fix aggregate bond supply at B = 0, so bonds are in zero net supply. The full calibration
+
+table is presented in Appendix A.
+
+Hyperparameters. We discuss and report hyperparameter choices for all our experiments in
+
+the Appendix A.
+
+Figure 3 reports the numerical solution and a simulation for the Huggett
+
+Numerical Results.
+
+economy.
+
+Log Aggregate Income z
+
+Consumption c
+
+2.00
+
+1.75
+
+1.50
+
+1.25
+
+1.00
+
+0.75
+
+0.50
+
+Wealth b
+
+0.02
+
+0.00
+
+0.02
+
+0.04
+
+0.0275
+
+0.0250
+
+0.0225
+
+Time
+
+0.0175
+
+Time
+
+Time
+
+1.5e-5
+
+100
+
+Trajectory 1
+
+Trajectory 2
+
+Trajectory 3
+
+Total assets B
+
+1.2e-5
+
+0.03
+
+1.0e-5
+
+7.5e-6
+
+5.0e-6
+
+2.5e-6
+
+0.0e0
+
+0.6
+
+(d) Interest rate
+
+z = 0.97, r = 0.031
+
+z = 0.99, r = 0.027
+
+z = 1.00, r = 0.024
+
+z = 1.01, r = 0.021
+
+z = 1.03, r = 0.017
+
+z = 1.05, r = 0.017
+
+Total assets B
+
+0.04
+
+100
+
+1.00
+
+(c) Aggregate consumption
+
+0.01
+
+1.02
+
+100
+
+0.02
+
+0.0200
+
+1.04
+
+(b) Aggregate state
+
+0.05
+
+0.0300
+
+Interest rate r
+
+Interest rate r
+
+0.0325
+
+0.06
+
+Trajectory 1
+
+Trajectory 2
+
+Trajectory 3
+
+Trajectory 1
+
+Trajectory 2
+
+Trajectory 3
+
+1.06
+
+0.98
+
+(a) Optimal consumption policy
+
+0.0350
+
+Trajectory 1
+
+Trajectory 2
+
+Trajectory 3
+
+0.04
+
+Aggregate consumption C
+
+y = 0.55, z = 0.96, r = 0.033
+
+y = 0.55, z = 1.04, r = 0.017
+
+y = 1.82, z = 0.96, r = 0.033
+
+y = 1.82, z = 1.04, r = 0.017
+
+2.25
+
+Aggregate saving S
+
+2.50
+
+0.4
+
+0.2
+
+0.0
+
+0.2
+
+0.4
+
+Aggregate saving S(r, z)
+
+0.6
+
+0.8
+
+-2.5e-6
+
+(e) Saving schedule
+
+Time
+
+100
+
+(f) Aggregate saving
+
+Figure 3: Simulation Results
+
+Panel (a) plots the optimal consumption policy as a function of wealth b on the horizontal
+
+axis. Each line corresponds to one combination of individual income, aggregate income, and
+
+prices. We choose the realizations of (yt , zt , pt ) that occur frequently in our simulations. The
+
+policy is monotonically increasing and concave in b, as expected from standard theory: richer
+
+households consume more, but at a decreasing marginal propensity.
+
+Panels (b)-(d) display simulated time series for the aggregate state, aggregate consumption
+
+and equilibrium prices. Panel (b) shows the exogenous process for log aggregate income zt .
+
+Panel (c) plots aggregate consumption Ct , which co-moves with zt but is somewhat smoother
+
+due to precautionary savings and imperfect risk sharing. Panel (d) shows the resulting interest
+
+rate rt , which adjusts endogenously to clear the bond market in the presence of incomplete
+
+markets and zero net bond supply.
+
+Panel (e) revisits the equilibrium bond demand schedule S( p, z) discussed in Section 3.4,
+
+now evaluated at the trained policy. For different realizations of the aggregate state z, the figure
+
+shows how the aggregate demand for bonds varies with the interest rate. Market clearing
+
+corresponds to the intersection of S( p, z) with zero.
+
+Finally, Panel (f) plots the bond-market clearing residual along the simulated path, i.e. the
+
+difference between aggregate bond holdings implied by households’ policies and the fixed
+
+supply of zero. The residual remains very close to zero throughout the simulation. The small
+
+deviations that do arise are due to numerical interpolation in prices rather than to a failure
+
+of the algorithm to enforce equilibrium. In practice, these deviations are negligible both in
+
+absolute terms. The average gap in bond market clearing for a single run is about 4.4 × 10−6 .
+
+Partial equilibrium problem. To gauge the accuracy of our SRL approach, we first consider
+
+a partial equilibrium (PE) version of the Huggett economy. In PE, households take as given
+
+an exogenous Markov process for interest rates and solve their individual dynamic program
+
+using either our SRL method or a standard value function iteration (VFI) algorithm. Because
+
+the PE environment dispenses with the fixed point over prices and distributions, it is a setting
+
+in which there is broad agreement on the correctness of conventional VFI solutions. This makes
+
+it a natural benchmark against which to compare the policies implied by our method. We
+
+describe the details of the PE specification and calibration in Appendix A.1.
+
+y = 0.55, r = 0.019, z = 0.94
+
+2.25
+
+2.00
+
+2.00
+
+1.75
+
+1.50
+
+1.25
+
+1.00
+
+0.75
+
+0.50
+
+1.75
+
+1.50
+
+1.25
+
+1.00
+
+0.75
+
+Wealth b
+
+0.50
+
+y = 1.82, r = 0.019, z = 0.94
+
+Consumption c
+
+1.8
+
+1.6
+
+1.4
+
+Wealth b
+
+VFI
+
+Our Method
+
+2.2
+
+2.0
+
+y = 1.82, r = 0.032, z = 1.06
+
+2.4
+
+VFI
+
+Our Method
+
+2.2
+
+Consumption c
+
+VFI
+
+Our Method
+
+2.25
+
+Consumption c
+
+Consumption c
+
+y = 0.55, r = 0.032, z = 1.06
+
+VFI
+
+Our Method
+
+2.0
+
+1.8
+
+1.6
+
+1.4
+
+1.2
+
+1.2
+
+Wealth b
+
+Wealth b
+
+Figure 4: Solution comparison for the PE problem: SRL vs VFI
+
+Figure 4 reports the comparison. Each panel plots the optimal consumption policy as a
+
+function of wealth b for four combinations of individual income y and interest rates r. The
+
+dashed line shows the policy obtained from our SRL algorithm, while the solid line shows
+
+the corresponding VFI solution in the PE environment. Across all four panels, the two sets
+
+of policy functions are almost indistinguishable. This comparison is a first reassuring test of
+
+the accuracy of our SRL method. It shows that, in a setting where a trusted VFI benchmark is
+
+available, our SRL approach replicates the rational expectation solution closely.
+
+Solutions with Lagged Price History.
+
+A complementary way to assess the restrictiveness of
+
+conditioning only on pt is to enlarge the observable state with lagged prices. Conceptually,
+
+this moves us part of the way toward the full MA(∞) representation of the agent’s problem,
+
+which in the limit would reproduce the rational expectations solution. Concretely, we now
+
+re-solve the Huggett model allowing households to keep track of one lagged price, so that pt−1
+
+becomes an additional state variable.
+
+s2 = 0.55, zt = 0.982, pt = 0.029
+
+Only current price
+
+pt 1 = 0.027
+
+pt 1 = 0.029
+
+pt 1 = 0.031
+
+1.75
+
+2.00
+
+Consumption c
+
+Consumption c
+
+2.00
+
+1.50
+
+1.25
+
+1.00
+
+1.75
+
+1.00
+
+0.50
+
+0.50
+
+Wealth s1
+
+1.0
+
+Wealth s1
+
+1.4
+
+Wealth s1
+
+Wealth s1
+
+1.8
+
+1.6
+
+1.4
+
+Wealth s1
+
+s2 = 1.82, zt = 1.019, pt = 0.020
+
+2.4
+
+Only current price
+
+pt 1 = 0.018
+
+pt 1 = 0.020
+
+pt 1 = 0.022
+
+2.2
+
+1.4
+
+1.0
+
+2.0
+
+1.6
+
+1.0
+
+Only current price
+
+pt 1 = 0.018
+
+pt 1 = 0.020
+
+pt 1 = 0.022
+
+2.2
+
+1.8
+
+1.2
+
+Wealth s1
+
+s2 = 1.00, zt = 1.019, pt = 0.020
+
+Only current price
+
+pt 1 = 0.023
+
+pt 1 = 0.025
+
+pt 1 = 0.027
+
+2.0
+
+1.2
+
+0.50
+
+Consumption c
+
+Consumption c
+
+1.6
+
+s2 = 1.82, zt = 0.998, pt = 0.025
+
+2.2
+
+1.8
+
+1.0
+
+2.4
+
+Only current price
+
+pt 1 = 0.027
+
+pt 1 = 0.029
+
+pt 1 = 0.031
+
+2.0
+
+1.2
+
+s2 = 1.82, zt = 0.982, pt = 0.029
+
+2.2
+
+Wealth s1
+
+1.4
+
+1.0
+
+1.6
+
+1.2
+
+1.8
+
+1.2
+
+1.00
+
+Consumption c
+
+Consumption c
+
+Consumption c
+
+1.4
+
+2.4
+
+Consumption c
+
+2.0
+
+1.6
+
+1.25
+
+Only current price
+
+pt 1 = 0.023
+
+pt 1 = 0.025
+
+pt 1 = 0.027
+
+2.2
+
+1.8
+
+1.50
+
+s2 = 1.00, zt = 0.998, pt = 0.025
+
+Only current price
+
+pt 1 = 0.027
+
+pt 1 = 0.029
+
+pt 1 = 0.031
+
+2.0
+
+1.75
+
+0.75
+
+s2 = 1.00, zt = 0.982, pt = 0.029
+
+2.2
+
+2.00
+
+1.25
+
+0.75
+
+s2 = 0.55, zt = 1.019, pt = 0.020
+
+Only current price
+
+pt 1 = 0.018
+
+pt 1 = 0.020
+
+pt 1 = 0.022
+
+2.25
+
+1.50
+
+0.75
+
+s2 = 0.55, zt = 0.998, pt = 0.025
+
+Only current price
+
+pt 1 = 0.023
+
+pt 1 = 0.025
+
+pt 1 = 0.027
+
+2.25
+
+Consumption c
+
+2.25
+
+2.0
+
+1.8
+
+1.6
+
+1.4
+
+1.2
+
+Wealth s1
+
+Wealth s1
+
+Figure 5: Consumption Policy Function with Price Lags pt−1 as State Variable
+
+From a computational standpoint, this extension is straightforward: our method can accommodate a small number of lagged observables without reintroducing the curse of dimensionality. From an economic standpoint, it should, in principle, help agents forecast: because
+
+prices are not Markov in pt alone, a longer price history ought to contain incremental information about future prices.
+
+Figure 5 shows that, in practice, the effect of this additional information is minimal. The
+
+figure compares solutions to the Huggett model when agents condition (i) only on the current
+
+price pt (solid blue line) and (ii) on both pt and its lag pt−1 (dashed lines). Each panel plots
+
+the consumption policy across wealth b for fixed values of the individual income state y, the
+
+aggregate income state z, and the current interest rate r. Different dashed lines correspond to
+
+different realizations of past prices.
+
+Across all panels, the dashed lines lie almost on top of the solid line. That is, once we
+
+fix the current state (yt , zt , pt ), optimal consumption is almost insensitive to the additional
+
+information contained in pt−1 . This suggests that, at least in the Huggett environment, current
+
+prices already summarize the relevant aspects of the history for household decisions, and that
+
+extending the observable state to include one lag has only a negligible impact on behavior.
+
+Next, we study how the quality
+
+Dependence on the number of trajectories (sample size).
+
+and stability of the learned policy depend on the number of simulated trajectories used for
+
+training. Figure 6 summarizes these results.
+
+Panel (a) reports the consumption policy obtained from a single training run with 512 simulated trajectories. This number of trajectories is a key hyperparameter in our algorithm: it
+
+controls how many distinct state-price paths agents observe and learn from. The resulting
+
+policy is monotone and concave in wealth, as theory would suggest.
+
+2.50
+
+2.25
+
+2.00
+
+1.75
+
+1.50
+
+1.25
+
+1.75
+
+1.50
+
+1.25
+
+1.00
+
+1.00
+
+0.75
+
+0.75
+
+0.50
+
+2.50
+
+Wealth b
+
+(a) Policy with Nsample = 512
+
+0.50
+
+2.00
+
+1.50
+
+1.25
+
+0.75
+
+Wealth b
+
+(c) Policy CI with Nsample = 2048
+
+1.25
+
+0.75
+
+1.50
+
+1.00
+
+1.75
+
+1.00
+
+y = 0.55, z = 0.96, r = 0.034
+
+y = 0.55, z = 1.04, r = 0.016
+
+y = 1.82, z = 0.96, r = 0.034
+
+y = 1.82, z = 1.04, r = 0.016
+
+2.25
+
+1.75
+
+0.50
+
+2.50
+
+Consumption c
+
+2.00
+
+Wealth b
+
+(b) Policy CI with Nsample = 512
+
+y = 0.55, z = 0.96, r = 0.033
+
+y = 0.55, z = 1.04, r = 0.019
+
+y = 1.82, z = 0.96, r = 0.033
+
+y = 1.82, z = 1.04, r = 0.019
+
+2.25
+
+Consumption c
+
+y = 0.55, z = 0.96, r = 0.033
+
+y = 0.55, z = 1.04, r = 0.017
+
+y = 1.82, z = 0.96, r = 0.033
+
+y = 1.82, z = 1.04, r = 0.017
+
+2.25
+
+Consumption c
+
+2.00
+
+Consumption c
+
+2.50
+
+y = 0.55, z = 0.96, r = 0.033
+
+y = 0.55, z = 1.04, r = 0.017
+
+y = 1.82, z = 0.96, r = 0.033
+
+y = 1.82, z = 1.04, r = 0.017
+
+0.50
+
+Wealth b
+
+(d) Policy CI with Nsample = 24
+
+Figure 6: Dependence of Policies on Sample Size in the Huggett model
+
+Panel (b) turns to sampling uncertainty. Here we compute pointwise 95\% confidence intervals (CIs) for the policy based on 10 independent training runs, each again using 512 trajectories. The figure shows that the confidence bands are quite tight across the wealth distribution.
+
+The bands widen modestly at higher wealth levels. This pattern is natural: states with high
+
+wealth are visited only rarely in the simulations — indeed, beyond roughly b > 10 there is essentially no mass in the stationary distribution, so the algorithm has fewer observations from
+
+which to learn. Regions of the state space that are visited infrequently thus come with more
+
+sampling noise in the estimated policy.
+
+Panels (c) and (d) vary the number of training trajectories to make this dependence more
+
+transparent. In Panel (c), we increase the number of trajectories. The point estimates of the
+
+policy change very little, but the confidence bands shrink, including in the high-wealth region.
+
+In other words, feeding the algorithm more data primarily reduces uncertainty; it does not
+
+systematically move the policy itself. Conversely, Panel (d) shows the case with fewer trajectories. Here the confidence intervals become much wider, especially at high wealth levels
+
+where visits are sparse. Put differently, when agents have learned from only a small number
+
+of simulations, agents who happen to find themselves in the same high-wealth state can end
+
+up taking quite different actions across independent runs.
+
+These results suggest a useful way to think about our stochastic solution method. If we
+
+could associate to each point in the state space a simple measure of “confidence” — for example, based on the width of the confidence band or on how often that state is visited in simulation — it would reveal that agents are very certain about their behavior in frequently visited
+
+states, but much less certain in rare states. Our experiments indicate that, for economically relevant regions of the state space (low and medium wealth), the learned policies are both stable
+
+and precise, while the main residual uncertainty is confined to tails that households almost
+
+never reach in practice.
+
+\subsection{Krusell-Smith Model}
+
+Setup. The household side of the Krusell-Smith economy is as in the Huggett model, except that financial wealth is now productive capital owned by households and rented
+
+to a representative firm. The firm uses capital and labor to produce according to
+
+Yt = zt Ktα L1t −α .
+
+Under perfect competition, factor prices equal marginal products, wt = (1 − α) YLtt and rtK = α KYtt ,
+
+where wt is the real wage rate and rtK the rental rate of capital. Since households own the capital
+
+and pay for depreciation, their net rate of return on capital is rt = rtK − δ. The market clearing
+
+condition for capital is
+
+Z
+
+b dGt (b, y) = Kt ,
+
+and labor market clearing condition is given by Lt = 1 because each household supplies one
+
+unit of labor inelastically.
+
+Calibration. One period corresponds to a year. On the preference side, we set β = 0.95 and
+
+use CRRA preferences with coefficient of relative risk aversion σ = 3. On the production side,
+
+we set the capital share to α = 0.36 and the depreciation rate to δ = 0.08, standard in the
+
+quantitative macro literature. For idiosyncratic income, we retain the same AR(1) specification
+
+and parameters as in the Huggett model, so that the cross-sectional heterogeneity is directly
+
+comparable across the two experiments. Aggregate productivity zt also follows a log AR(1)
+
+process with persistence ρz = 0.9 and innovation volatility νz = 0.03. All log AR(1) processes
+
+are discretized on finite grids using a standard Tauchen procedure; the details of the grids are
+
+reported in Appendix A.
+
+Figure 7 plots simulation results for our solution of the Krusell-Smith
+
+Numerical Results.
+
+model. We start in Panel (a) with the exogenous aggregate productivity process zt , and plot in
+
+Panel (b) aggregate capital Kt , in Panel (c) aggregate consumption Ct , in Panel (d) the aggregate
+
+rental rate rtK and in Panel (e) the aggregate wage wt . As in standard neoclassical models, Kt
+
+and Ct comove strongly with zt , while rtK and wt move in opposite directions.
+
+6.5
+
+Aggregate capital k
+
+log TFP(z)
+
+0.1
+
+0.0
+
+0.1
+
+1.8
+
+Trajectory 1
+
+Trajectory 2
+
+Trajectory 3
+
+7.0
+
+Aggregate consumption C
+
+Trajectory 1
+
+Trajectory 2
+
+Trajectory 3
+
+0.2
+
+6.0
+
+5.5
+
+5.0
+
+4.5
+
+4.0
+
+0.2
+
+3.5
+
+100 125 150 175 200
+
+Time
+
+(a) log TFP log(z)
+
+100
+
+Time
+
+125
+
+150
+
+175
+
+200
+
+1.3
+
+Wage w
+
+0.05
+
+1.2
+
+1.1
+
+0.04
+
+1.0
+
+0.03
+
+0.9
+
+100
+
+Time
+
+125
+
+150
+
+175
+
+200
+
+(d) Rental rate r
+
+1.4
+
+1.3
+
+1.2
+
+1.1
+
+1.8
+
+1.4
+
+0.06
+
+1.5
+
+100
+
+Time
+
+125
+
+150
+
+175
+
+100
+
+Time
+
+125
+
+150
+
+175
+
+200
+
+(c) Aggregate consumption C
+
+Trajectory 1
+
+Trajectory 2
+
+Trajectory 3
+
+1.5
+
+0.07
+
+Rental rate r
+
+(b) Aggregate capital K
+
+Trajectory 1
+
+Trajectory 2
+
+Trajectory 3
+
+0.08
+
+1.6
+
+Aggregate consumption C
+
+Trajectory 1
+
+Trajectory 2
+
+Trajectory 3
+
+1.7
+
+200
+
+(e) Wage w
+
+All trajectories
+
+1.7
+
+1.6
+
+1.5
+
+1.4
+
+1.3
+
+1.2
+
+1.1
+
+0.2
+
+0.1
+
+0.0
+
+log TFP z
+
+0.1
+
+0.2
+
+(f) C vs log TFP(z)
+
+Figure 7: Simulation Results
+
+The final panel (f) presents a scatter plot of aggregate consumption Ct against the exogenous productivity shock zt . We find substantial vertical dispersion: for a given realization of
+
+zt , different periods in the simulation exhibit quite different levels of aggregate consumption.
+
+If all points lay on a single curve, then the same aggregate productivity level would always be
+
+associated with the same Ct . Instead, the cross-sectional wealth distribution shifts over time in
+
+ways that matter for aggregates, so the mapping zt 7→ Ct is history-dependent. The blue dots
+
+in Panel (f) represent states actually visited along the simulated path, so this vertical spread
+
+measures the quantitative importance of distributional dynamics for aggregate outcomes. For
+
+values of zt very close to zero, simulated realizations of Ct range roughly from 1.24 to 1.6, i.e.
+
+a difference on the order of 20\% of steady-state consumption. This illustrates that, even in this
+
+relatively simple heterogeneous-agent model, the cross-sectional distribution has a non-trivial
+
+impact on the aggregate response.
+
+Dependence on the number of trajectories (sample size). We now illustrate how the learned
+
+policy depends on the number of simulated trajectories used for training, similar to our discussion of Figure 6 for the Huggett model. Panels (a) and (b) report the consumption policy
+
+3.0
+
+2.0
+
+1.5
+
+1.0
+
+0.5
+
+Wealth b
+
+(a) Policy with Nsample = 512
+
+1.5
+
+0.5
+
+3.0
+
+y = 0.55, r = 0.049, w = 1.14
+
+y = 1.00, r = 0.049, w = 1.14
+
+y = 1.82, r = 0.049, w = 1.14
+
+2.0
+
+1.5
+
+1.0
+
+Wealth b
+
+(b) Policy CI with Nsample = 512
+
+y = 0.55, r = 0.049, w = 1.14
+
+y = 1.00, r = 0.049, w = 1.14
+
+y = 1.82, r = 0.049, w = 1.14
+
+2.5
+
+Consumption c
+
+2.5
+
+Consumption c
+
+2.0
+
+1.0
+
+3.0
+
+0.5
+
+y = 0.55, r = 0.049, w = 1.14
+
+y = 1.00, r = 0.049, w = 1.14
+
+y = 1.82, r = 0.049, w = 1.14
+
+2.5
+
+Consumption c
+
+2.5
+
+Consumption c
+
+3.0
+
+y = 0.55, r = 0.049, w = 1.14
+
+y = 1.00, r = 0.049, w = 1.14
+
+y = 1.82, r = 0.049, w = 1.14
+
+2.0
+
+1.5
+
+1.0
+
+Wealth b
+
+(c) Policy CI with Nsample = 2048
+
+0.5
+
+Wealth b
+
+(d) Policy CI with Nsample = 24
+
+Figure 8: Dependence of Policies on Sample Size in the Krusell and Smith (1998) model
+
+from a single training run and the associated 95\% confidence intervals based on 10 independent training runs, both using 512 trajectories, respectively. The resulting policy is monotone
+
+and concave in wealth and visually very similar to the policies we documented in the Huggett
+
+experiment.There is only mild sampling uncertainty. Confidence bands are tight, especially
+
+for low wealth levels.
+
+Panel (c) increases the number of trajectories to 2048 and illustrates that confidence bands
+
+shrink even for the highest wealth levels. Panel (d) instead reduces the number of trajectories
+
+to 24 and illustrates that sampling uncertainty across runs increases substantially, especially at
+
+high wealth levels which are visited more rarely during the simulation.
+
+Comparison to rational expectation solution.
+
+The partial equilibrium comparison we used
+
+in Section 4.1 isolates the individual dynamic programming problem, where there is broad
+
+agreement on the accuracy of conventional VFI solutions. In general equilibrium, by contrast,
+
+obtaining the rational expectations (RE) solution requires treating the entire cross-sectional
+
+distribution as a state variable and solving the Master equation, a problem of much higher
+
+computational complexity. A growing literature proposes global solution methods for such
+
+RE equilibria. One recent example is the DeepHAM approach of Han et al. (2021), which uses
+
+deep neural networks to approximate high-dimensional policy and value functions.
+
+To benchmark our SRL method in this environment, we compare it directly to DeepHAM.
+
+Because the RE policy functions in DeepHAM conditions on the full cross-sectional distribution, whereas our approach conditions only on prices, the policy functions are not directly
+
+comparable. We therefore focus on equilibrium dynamics. Specifically, we initialize both
+
+economies from the same cross-sectional distribution and expose them to identical sequences
+
+of aggregate shocks. Figure 9 reports the resulting paths of aggregate consumption and capital.
+
+Across both panels, the two methods generate nearly indistinguishable aggregate dynamics.
+
+This comparison indicates that, at least in the Krusell-Smith environment, our SRL approach can replicate the rational expectations solution while retaining the flexibility and scalability of a reinforcement-learning implementation.
+
+DeepHAM
+
+Our Method
+
+41
+
+2.90
+
+Aggregate capital K
+
+Aggregate consumption C
+
+DeepHAM
+
+Our Method
+
+2.95
+
+2.85
+
+2.80
+
+2.75
+
+200
+
+400
+
+Time
+
+600
+
+800
+
+1000
+
+200
+
+400
+
+Time
+
+600
+
+800
+
+1000
+
+Figure 9: Comparison to RE Solution with the DeepHAM method in Han et al. (2021)
+
+4.3
+
+HANK Model
+
+Our final benchmark economy is a one-account HANK model with sticky prices. This environment adds nominal rigidities and a richer firm block to the incomplete-markets structure
+
+above.
+
+Setup. The problem of household i is identical to that in the Huggett model, except that labor supply
+
+is now endogenous. In sequence form,
+
+∞
+
+vi,0 = max E0 ∑ βt u(ci,t , ni,t )
+
+\{ci,t ,ni,t \}
+
+s.t.
+
+t =0
+
+ci,t + bi,t+1 = (1 + rt )bi,t + wt yi,t ni,t + dt − Tt ,
+
+bi,t+1 ≥ 0,
+
+where wt is the real wage, dt denotes dividend payouts, and Tt is a lump-sum tax. Households
+
+are the ultimate owners of firms but equity shares are not traded. The idiosyncratic income
+
+process yi,t is as in the Huggett model.
+
+On the production side, a competitive final-good firm aggregates a continuum of intermediate inputs using a CES production technology with elasticity of substitution ε. Denoting by
+
+Yt aggregate output of the final good, cost minimization implies that demand for intermediate
+
+input j is
+
+
+
+y j,t =
+
+Pj,t
+
+Pt
+
+−ε
+
+Yt ,
+
+(22)
+
+where Pj,t is the price of good j and
+
+Pt =
+
+Z 1
+
+1− ε
+
+Pj,t
+
+dj
+
+ 1−1 ε
+
+is the aggregate price index.
+
+Each intermediate good j is produced by a monopolistically competitive firm with technology y j,t = zt L j,t . The productivity term zt is common to all firms and follows a Markov process
+
+zt+1 ∼ Tz (· | zt ). Firm j chooses its price \{ Pj,t \} to maximize the discounted value of profits
+
+subject to a quadratic adjustment cost as in Rotemberg (1982):
+
+∞
+
+Jj,0 = max E0 ∑
+
+\{ Pj,t \}
+
+1
+
+R0−→
+
+t
+
+t =0
+
+
+
+Pj,t
+
+wt
+
+θ
+
+y j,t − y j,t −
+
+Pt
+
+zt
+
+
+
+Pj,t − Pj,t−1
+
+Pj,t−1
+
+2 
+
+Yt
+
+subject to the demand function (22) and taking as given an initial price Pj,−1 . Here R0→t =
+
+R1 × . . . × Rt denotes the gross real interest rate between periods 0 and t with Rt = 1 + rt .
+
+We focus on a symmetric distribution of initial prices, Pj,−1 = Pj0 ,−1 , which implies symmetry ex post. In equilibrium we therefore have Pj,t = Pt and y j,t = Yt for all j. Denoting net
+
+inflation by
+
+Πt =
+
+Pt − Pt−1
+
+,
+
+Pt−1
+
+the firm’s problem gives rise to the New Keynesian Phillips curve
+
+Π t (1 + Π t ) =
+
+ε
+
+θ
+
+
+
+wt
+
+ε−1
+
+−
+
+zt
+
+ε
+
+
+
+
+
+
+
+1 Yt+1
+
++ Et R −
+
+Π
+
+(
+
++
+
+Π
+
+)
+
+t +1
+
+t +1 .
+
+t +1
+
+Yt
+
+(23)
+
+The first term captures the gap between real marginal cost wztt and the desired markup ε−ε 1 ,
+
+while the second term reflects expected future inflation, discounted by the real interest rate
+
+and scaled by output growth. Given inflation, firm dividend payments are
+
+
+
+dt =
+
+
+
+wt
+
+θ
+
+1−
+
+Yt − Π2t Yt .
+
+zt
+
+Monetary policy follows a Taylor rule
+
+1 + it+1 = R̄(1 + Πt )φ eet ,
+
+where φ > 1 and the monetary policy shock et+1 ∼ Te (· | et ) follows a Markov process. The
+
+real and nominal interest rates are linked by the Fisher equation
+
+Rt =
+
+1 + it
+
+.
+
+1 + Πt
+
+The government has a fixed supply of debt B outstanding and finances interest payments using
+
+lump-sum taxes on households, rt B = Tt .
+
+Finally, three markets must clear in equilibrium. Goods market clearing requires
+
+Yt =
+
+Z
+
+θ
+
+c(b, y)dG (b, y) + Π2t Yt .
+
+so aggregate output is absorbed by consumption and price-adjustment costs. Labor market
+
+clearing implies
+
+Lt =
+
+Z
+
+and the bond market clears when
+
+B=
+
+n(b, y)dG (b, y),
+
+Z
+
+b dG (b, y),
+
+where we assume that bonds are in fixed positive supply B. The definition of competitive
+
+equilibrium is standard.
+
+Firm Policy Gradient Method for the Phillips Curve. The price-setting block introduces an
+
+additional difficulty relative to the Huggett and Krusell-Smith models: Firm optimality gives
+
+rise to the forward-looking Phillips curve (23). Standard approaches typically parameterize the
+
+conditional expectation term in Equation (23) and solve a non-trivial fixed point for the law of
+
+motion of inflation; see for example Kase et al. (2024); Fernández-Villaverde et al. (2024b).
+
+By contrast, we treat the firm problem exactly as we treat the household problem and solve
+
+it using the same SPG method. In practice, this means that we represent the firm’s inflation
+
+policy as a function of individual firm states, aggregate shocks, and prices that are payoff
+
+relevant: Πt = Π(wt , zt ). All policy functions are updated simultaneously. Households and
+
+firms thus learn jointly from the same simulated trajectories, and there is no separate fixedpoint step for equilibrium expectations.
+
+A detailed description of the implementation is provided in Appendix A.3. Here we simply
+
+note that, in our experiments, this symmetric treatment of households and firms has very good
+
+convergence properties. As Table 1 shows, solving the HANK model with the forward-looking
+
+Phillips curve is only mildly more costly than solving the baseline Huggett model, despite the
+
+added forward-looking structure in the firm block.
+
+Calibration. A time period corresponds to a year, with β = 0.95. Preferences are CRRA and
+
+separable in consumption and labor, u(c, n) = 1−1 σ c1−σ − 1+1 η n1+η , with coefficient of relative
+
+risk aversion σ = 1 implying log utility over consumption, and inverse Frisch elasticity η = 1.
+
+On the production side, we set the elasticity of substitution across intermediate goods to
+
+ε = 10 and the Rotemberg adjustment cost parameter to θ = 100. We set the Taylor rule
+
+coefficient to φ = 1.5, and we set the fixed government bond supply to B = 5.
+
+This economy features three shocks: one idiosyncratic and two aggregate. For households’
+
+idiosyncratic income process, we use the same AR(1) specification and parameterization as in
+
+the Huggett model so that cross-sectional heterogeneity is directly comparable across applications. Aggregate risk comprises the TFP process zt and the monetary policy shock et , both
+
+following AR(1) processes. We set their persistence to ρz = ρe = 0.9 and their innovation
+
+volatilities to νz = 0.07 and νe = 0.002, respectively. We use a standard Tauchen procedure to
+
+discretize all three processes on finite grids and report all remaining details in Appendix A.
+
+Numerical Results.
+
+Figure 10 reports the optimal policy functions for households and firms
+
+in the HANK model. Panels (a) and (b) show household consumption and labor supply policies, while Panel (c) displays the firm’s inflation policy. For each policy, we plot the point
+
+estimate together with confidence bands obtained from 10 independent training runs with
+
+N = 512 simulated trajectories each.
+
+1.8
+
+y = 0.55, r = 0.026, w = 0.88
+
+y = 1.00, r = 0.026, w = 0.88
+
+y = 1.82, r = 0.026, w = 0.88
+
+1.4
+
+1.4
+
+1.2
+
+1.0
+
+1.2
+
+1.0
+
+0.8
+
+0.8
+
+0.6
+
+0.6
+
+0.4
+
+y = 0.55, r = 0.026, w = 0.88
+
+y = 1.00, r = 0.026, w = 0.88
+
+y = 1.82, r = 0.026, w = 0.88
+
+1.6
+
+Labor supply n
+
+Consumption c
+
+1.6
+
+Wealth b
+
+(a) Consumption policy
+
+Wealth b
+
+(b) Labor supply policy
+
+w = 0.87
+
+w = 0.89
+
+w = 0.91
+
+0.02
+
+Inflation
+
+0.01
+
+0.00
+
+0.01
+
+0.02
+
+0.2
+
+0.1
+
+0.0
+
+log TFP log(z)
+
+0.1
+
+0.2
+
+(c) Inflation policy
+
+Figure 10: Household and Firm Policy Functions in HANK
+
+Panel (a) shows that consumption is increasing and concave in wealth and increasing in
+
+idiosyncratic labor productivity, as standard theory would suggest. Panel (b) shows the corresponding labor supply policy, which is decreasing and convex in wealth and increasing in
+
+labor productivity: richer households work less at the margin, while high-productivity households supply more labor.
+
+Panel (c) displays the firm’s inflation policy function. It is decreasing and almost linear in
+
+log aggregate productivity and increasing in marginal cost. In particular, positive supply (TFP)
+
+shocks lower marginal cost and induce lower inflation, consistent with the New Keynesian
+
+Phillips curve (23).
+
+Across all three panels, the confidence bands are tight over the bulk of the wealth distribution and widen somewhat only in the far tails, where states are rarely visited in simulation.
+
+The firm’s policy is the most challenging to learn — reflected in somewhat wider confidence
+
+bands — but remains well behaved and economically sensible. Overall, Figure 10 suggests
+
+that our SPG method recovers accurate policy functions in this richer HANK environment.
+
+Figure 11 reports simulated time series for the HANK model. Panels (a) and (b) display the
+
+two aggregate shocks: log TFP zt and the monetary policy shock et . Panels (c)-(f) then show
+
+the induced time series for the real interest rate, aggregate consumption, aggregate savings,
+
+and inflation.
+
+0.20
+
+Trajectory 1
+
+Trajectory 2
+
+0.00
+
+0.05
+
+Interest Rate r
+
+Monetary shock e
+
+0.05
+
+0.10
+
+0.002
+
+0.000
+
+0.002
+
+0.15
+
+Time
+
+100
+
+Trajectory 1
+
+Trajectory 2
+
+Time
+
+0.95
+
+0.90
+
+100
+
+(d) Aggregate consumption C
+
+Time
+
+100
+
+Trajectory 1
+
+Trajectory 2
+
+0.02
+
+0.01
+
+5.02
+
+5.00
+
+4.98
+
+0.00
+
+0.01
+
+4.96
+
+0.02
+
+4.92
+
+Time
+
+(c) Interest rate r
+
+4.94
+
+Inflation
+
+Aggregate saving S
+
+1.00
+
+0.02
+
+100
+
+Trajectory 1
+
+Trajectory 2
+
+Total assets B
+
+5.06
+
+5.04
+
+0.03
+
+(b) Monetary shock e
+
+1.05
+
+0.04
+
+0.01
+
+(a) log TFP log(z)
+
+Aggregate consumption C
+
+Trajectory 1
+
+Trajectory 2
+
+0.05
+
+0.004
+
+0.10
+
+log TFP log(z)
+
+0.006
+
+Trajectory 1
+
+Trajectory 2
+
+0.15
+
+Time
+
+100
+
+(e) Aggregate saving S
+
+Time
+
+100
+
+(f) Inflation Π
+
+Figure 11: Simulated Trajectories in HANK
+
+Aggregate consumption in Panel (d) moves procyclically with productivity: positive TFP
+
+shocks raise Yt and, through higher labor income and lower marginal costs, also increase Ct .
+
+Inflation in Panel (f) is countercyclical with respect to TFP, consistent with the Phillips curve
+
+(23): favorable supply shocks reduce marginal costs and put downward pressure on inflation.
+
+In our calibration macro aggregates appear more sensitive to TFP innovations than to monetary shocks.
+
+Panel (e) plots households’ aggregate demand for bonds, together with the fixed supply
+
+B = 5. Asset demand fluctuates tightly around the supply level, and deviations from the
+
+horizontal supply line measure residuals in the bond market clearing condition. On average,
+
+the relative absolute deviation of aggregate demand from supply is 0.22\%. These residuals
+
+primarily reflect the use of linear interpolation in solving for market-clearing prices.
+

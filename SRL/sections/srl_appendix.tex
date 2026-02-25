@@ -1,0 +1,941 @@
+Online Appendix
+
+A
+
+Model Calibration and Hyperparameters
+
+This appendix presents additional model, calibration and implementation details for the applications we solve in Section 4 using our SRL approach. We start with the Huggett (1993)
+
+application in Appendix A.1, move to the Krusell and Smith (1998) application in Appendix
+
+A.2, and conclude with the HANK application in Appendix A.3.
+
+A.1
+
+Appendix for Huggett Application
+
+We summarize the calibration we use in Section 4.1 in Table 2. Table 3 summarizes the hyperparameters used to solve the Huggett model with our SRL algorithm. We briefly discuss the
+
+main choices and their rationale.
+
+Partial equilibrium specification.
+
+In the general equilibrium Huggett model, the interest
+
+rate is a complicated function of the aggregate state and the cross-sectional distribution. It is
+
+not Markov. For the partial equilibrium (PE) exercise discussed in Section 4.1, we instead take
+
+as given an exogenous Markov law of motion for the interest rate rt and let households solve
+
+their individual problem taking as given this process.
+
+We model the interest rate as a mean-reverting process with a square-root volatility term.
+
+In continuous time, this is analogous to a Cox-Ingersoll-Ross (CIR) or “Feller square-root”
+
+process, which ensures positivity of the interest rate. In discrete time, our PE price process is
+
+specified as
+
+rt+1 = (1 − ρr )r + ρr rt + νr
+
+q
+
+max\{rt , 0\} · ε r,t
+
+where
+
+ε r,t ∼ N (0, 1)
+
+where r is the long-run mean level of the interest rate, ρr its autocorrelation, and νr the innovation volatility. The parameter values we use are reported in Table 2 and are chosen so that
+
+the unconditional distribution of interest rates as well as the implied aggregate bond holdings
+
+in PE are broadly consistent with general equilibrium in the Huggett calibration.
+
+The idiosyncratic income process y in PE is the same as in the GE model, a three-point
+
+discretization of a log AR(1) with persistence ρy and volatility νy , as reported in Table 2. Thus,
+
+the only difference between PE and GE is that in PE the household takes rt as an exogenous
+
+Markov process, while in GE it is determined endogenously from bond market clearing.
+
+For the numerical implementation, we discretize the PE interest rate process on a grid described in Table 3. This grid is constructed using the CIR discretization method in Farmer and
+
+Toda (2017), which is designed for square-root processes and preserves positivity. Together
+
+with the income grid for y, this yields a fully specified PE environment in which we can solve
+
+Parameter
+
+β
+
+σ
+
+ρy
+
+νy
+
+ρz
+
+νz
+
+B
+
+b
+
+r
+
+ρr
+
+νr
+
+Description
+
+Discount factor
+
+Coefficient of relative risk aversion
+
+Autocorrelation of labor income
+
+Variance parameter of labor income
+
+Persistence of AR(1) for zt (log TFP)
+
+Volatility of AR(1) for zt (log TFP)
+
+Total bond supply
+
+Borrowing constraint
+
+Mean interest rate (PE)
+
+Autocorrelation of interest rate (PE)
+
+Volatility of interest rate (PE)
+
+Value
+
+0.96
+
+0.6
+
+0.2
+
+0.9
+
+0.02
+
+-1
+
+0.038
+
+0.8
+
+0.02
+
+Table 2: Huggett model calibration
+
+the household problem using both our SPG algorithm and a conventional VFI method, as described in the main text.
+
+Discretization. The individual state (b, y) consists of bond holdings b and idiosyncratic income y. We discretize bonds on a one-dimensional grid with nb = 200 points and an upper
+
+bound bmax = 50. The income process y takes ny = 3 possible values. On the aggregate side,
+
+the two key state variables are the interest rate rt and aggregate income zt . We approximate
+
+rt on a grid with nr = 20 points covering the interval [r L , r H ] = [0.01, 0.06]. This range is
+
+chosen to comfortably contain all equilibrium interest rate realizations observed in our simulations while avoiding an unnecessarily large grid. Aggregate productivity zt is discretized on
+
+a grid with nz = 30 points using a standard Tauchen procedure. These choices strike a balance between accuracy and computational cost. They are fine enough to capture the relevant
+
+curvature in individual policies and the dependence of prices on the aggregate state.
+
+Simulation horizon and truncation. We approximate lifetime utility by truncating the infinite sum in (15) at a finite horizon Ttrunc . We choose Ttrunc to ensure that the tail of the
+
+discounted utility is negligible relative to a user-specified tolerance level etrunc ,
+
+n
+
+o
+
+Ttrunc = min T : β T < etrunc .
+
+In the baseline Huggett experiment, we use etrunc = 10−3 and obtain Ttrunc = 170, i.e. the
+
+contribution of periods beyond Ttrunc is bounded by 10−3 in present-value terms. To avoid
+
+numerical issues when wealth is very low, we also impose a minimal consumption floor cmin =
+
+10−3 . This has no discernible effect on the economic results but prevents the utility function
+
+from being evaluated at (or extremely close to) zero.
+
+Training schedule and learning rate. We train the SPG algorithm with an exponentially decaying learning rate. Let lrini denote the initial learning rate and lrdecay ∈ (0, 1) the decay
+
+Parameter
+
+nb
+
+bmax
+
+ny
+
+nr
+
+rL
+
+rH
+
+nz
+
+cmin
+
+Ttrunc
+
+etrunc
+
+Nepoch
+
+Nwarm-up
+
+lrini
+
+lrdecay
+
+lrsche
+
+Nsample
+
+econverge
+
+Description
+
+Number of b grid points
+
+Upper bound of b grid
+
+Number of y grid points
+
+Number of r grid points
+
+Lower bound of r grid
+
+Upper bound of r grid
+
+Number of z grid points
+
+Minimum consumption
+
+Truncation horizon for simulations
+
+Truncation threshold
+
+Maximum number of parameter updates
+
+Number of warm-up epochs
+
+Initial learning rate
+
+Learning rate decay rate
+
+Learning-rate scheduler
+
+Batch size (trajectories per update)
+
+Convergence threshold
+
+Value
+
+200
+
+20
+
+0.01
+
+0.06
+
+30
+
+10−3
+
+170
+
+10−3
+
+1000
+
+50
+
+10−3
+
+0.5
+
+exponential
+
+512
+
+3 × 10−4
+
+Table 3: Hyperparameters for solving the Huggett model
+
+factor. The learning rate at iteration t is given by
+
+t
+
+lrt = lrini · lrdecay
+
+,
+
+where
+
+t0 =
+
+max\{t − Nwarm-up , 0\}
+
+,
+
+Nepoch − Nwarm-up
+
+so that lrt is held constant during an initial “warm-up” phase of length Nwarm-up and then
+
+decays smoothly to a lower value by the final epoch Nepoch . In the Huggett application, we
+
+set Nepoch = 1000, Nwarm-up = 50, lrini = 10−3 , and lrdecay = 0.5, and we use an exponential
+
+scheduler (denoted by lrsche in Table 3). We declare convergence when the change in the policy
+
+parameters across epochs falls below the threshold econverge = 3 × 10−4 .
+
+Sampling, batching, and memory constraints.
+
+Due to GPU memory constraints, we do not
+
+use all simulated data to update the policy in each iteration. Instead, we sample data in minibatches. In each update, the effective data size is Nsample × Nupdate , where Nsample denotes
+
+the number of simulated trajectories per batch (we set Nsample = 512 in the baseline Huggett
+
+experiment) and Nupdate the number of time steps used from each trajectory for the gradient
+
+update. This mini-batching keeps memory requirements manageable while preserving enough
+
+variation in the data to obtain stable gradient estimates.
+
+Initialization and warm-up. We initialize the policy as described in Footnote 20 to guarantee
+
+that the initial aggregate savings schedule is at least weakly responsive to the interest rate. The
+
+training process is then split into two phases. During the warm-up phase of length Nwarm-up , we
+
+fix the cross-sectional distribution of agents at some simple initial guess g0 and do not update
+
+it. In this phase, the sole objective is to move the policy away from its crude initial guess
+
+and toward a reasonable neighborhood of the eventual solution. Keeping g fixed prevents the
+
+Parameter
+
+β
+
+σ
+
+b
+
+ρy
+
+νy
+
+a
+
+δ
+
+ρz
+
+νz
+
+Description
+
+Discount factor
+
+Utility parameter
+
+Borrowing constraint
+
+Autocorrelation of idiosyncratic shock
+
+Volatility of idiosyncratic shock
+
+Capital share
+
+Capital depreciation rate
+
+Persistence of AR(1) for zt (log TFP)
+
+Volatility of AR(1) for zt (log TFP)
+
+Value
+
+0.95
+
+0.6
+
+0.2
+
+0.36
+
+0.08
+
+0.9
+
+0.03
+
+Table 4: Krusell–Smith model calibration
+
+badly informed initial policy from “polluting” the distribution.
+
+After warm-up, we switch to an adaptive phase in which the distribution is updated endogenously, and which may last up to Nepoch − Nwarm-up epochs ( though convergence typically
+
+occurs earlier). We use the simulated distribution implied by the most recent policy as the
+
+initial distribution for each trajectory. In other words, after warm-up, each new batch of trajectories starts from a cross-section that is itself an equilibrium object. This iterative updating of
+
+the initial distribution ensures that the policy is trained on data drawn from its own induced
+
+stationary distribution, which is important for the accuracy of the final solution.
+
+A.2
+
+Appendix for Krusell-Smith Application
+
+Calibration. Table 4 summarizes the calibration for the Krusell-Smith model used in Section
+
+4.2. We use a discount factor of β = 0.95. The utility function is CRRA with a coefficient of
+
+relative risk aversion σ = 3, and the borrowing constraint is set at b = 0.
+
+The idiosyncratic income process is modeled as a log AR(1) with autocorrelation ρy = 0.6
+
+and innovation volatility νy = 0.2, the same specification as in the Huggett model. On the
+
+production side, we follow the standard Krusell-Smith calibration: the capital share is α =
+
+0.36, the depreciation rate is δ = 0.08, and aggregate productivity zt follows a log AR(1) with
+
+persistence ρz = 0.9 and volatility νz = 0.03.
+
+Discretization and grids.
+
+Table 5 reports the hyperparameters used for the SPG solution of
+
+the Krusell-Smith model. The individual capital state b is discretized on a grid with nb = 200
+
+points and an upper bound bmax = 100, which is higher than in the Huggett experiment. The
+
+larger upper bound reflects the fact that, in Krusell-Smith, agents accumulate capital rather
+
+than unproductive bonds, and the equilibrium wealth distribution is more dispersed. The
+
+idiosyncratic income state y again takes ny = 3 values.
+
+The aggregate price vector consists of the interest rate rt and the real wage wt . We approximate the price space on two separate grids: the interest rate is discretized with nr = 30 points
+
+on [r L , r H ] = [0.02, 0.07], and the wage with nw = 50 points on [w L , w H ] = [0.9, 1.5]. These
+
+ranges comfortably contain the realizations observed in our simulations and allow the policy
+
+to respond flexibly to movements in both prices without requiring a prohibitive number of
+
+Parameter
+
+nb
+
+bmax
+
+ny
+
+nr
+
+rL
+
+rH
+
+nw
+
+wL
+
+wH
+
+cmin
+
+cinit
+
+Ttrunc
+
+etrunc
+
+Nepoch
+
+Nwarm-up
+
+lrini
+
+lrdecay
+
+lrsche
+
+Nsample
+
+econverge
+
+Description
+
+Number of b grid points
+
+Upper bound of b grid
+
+Number of y grid points
+
+Number of r grid points
+
+Lower bound of r grid
+
+Upper bound of r grid
+
+Number of p2 grid points
+
+Lower bound of w grid
+
+Upper bound of w grid
+
+Minimum consumption
+
+Initial guess for consumption share
+
+Truncation horizon for simulations
+
+Truncation threshold
+
+Maximum number of parameter updates
+
+Number of warm-up epochs
+
+Initial learning rate
+
+Learning-rate decay rate
+
+Learning-rate scheduler
+
+Batch size (trajectories per update)
+
+Convergence threshold
+
+Value
+
+200
+
+100
+
+30
+
+0.02
+
+0.07
+
+0.9
+
+1.5
+
+10−3
+
+0.5
+
+90
+
+10−2
+
+1000
+
+50
+
+5 × 10−4
+
+0.5
+
+exponential
+
+512
+
+2 × 10−4
+
+Table 5: Hyperparameters for solving the Krusell–Smith model
+
+grid points.
+
+Simulation horizon and truncation.
+
+As in the Huggett case, lifetime utility is computed by
+
+truncating the infinite sum at a finite horizon Ttrunc . For Krusell-Smith we set Ttrunc = 90 and
+
+use a truncation tolerance etrunc = 10−2 , i.e.
+
+β Ttrunc < etrunc ,
+
+so that the tail of the discounted utility stream is negligible at the scale of our numerical accuracy. We also impose a minimal consumption level cmin = 10−3 to avoid evaluating utility at
+
+zero or extremely small consumption levels.
+
+Training schedule and convergence.
+
+We use the same general training structure as in the
+
+Huggett exercise but with slightly different numerical values. The maximum number of epochs
+
+is Nepoch = 1000, with Nwarm-up = 50 warm-up epochs during which the learning rate is kept
+
+constant and the initial distribution is fixed. The learning rate starts at lrini = 5 × 10−4 and
+
+decays exponentially at rate lrdecay = 0.5 according to the scheduler denoted by lrsche in
+
+Table 5. As in the Huggett case, the decay is only activated after the warm-up phase. We
+
+declare convergence when the change in parameters between successive epochs falls below
+
+econverge = 2 × 10−4 ; in practice, the algorithm typically converges well before hitting the hard
+
+cap of Nepoch .
+
+Mini-batching is again used to handle memory constraints and stabilize gradient estimates.
+
+Parameter
+
+β
+
+σ
+
+η
+
+φ
+
+θ
+
+e
+
+R̄
+
+ρz
+
+νz
+
+ρe
+
+νe
+
+Description
+
+Discount factor
+
+Coefficient of relative risk aversion
+
+Inverse of Frisch elasticity
+
+Coefficient of Taylor rule
+
+Price adjustment cost
+
+Elasticity of substitution
+
+Target for gross interest rate
+
+Autocorrelation of aggregate TFP shock
+
+Volatility of aggregate TFP shock
+
+Autocorrelation of monetary policy shock
+
+Volatility of monetary policy shock
+
+Value
+
+0.975
+
+1.5
+
+100
+
+10
+
+1.025
+
+0.9
+
+0.07
+
+0.9
+
+0.002
+
+Table 6: Calibration for the HANK model
+
+Each update uses Nsample = 512 simulated trajectories, and a fixed number of time steps
+
+per trajectory, to form the stochastic gradient. This yields a total data size per update of
+
+Nsample × Nupdate , which we choose to fully utilize the available GPU memory without inducing excessive variance in the gradient.
+
+Initialization and warm-up.
+
+The warm-up logic mirrors that used in the Huggett application
+
+but is adapted to the two-price environment. During the first Nwarm-up epochs, all trajectories
+
+are initialized from a cross-sectional distribution that is held fixed, while the policy is being
+
+updated. After warm-up, we update the cross-sectional distribution based on the most recent policy and allow the learning rate to adjust. The initial conditions for each new set of
+
+trajectories are drawn from the simulated distribution generated by the most recent policy.
+
+A.3
+
+Appendix for HANK Application
+
+Calibration. Table 6 reports the calibration of the HANK model used in Section 4.3. One
+
+model period corresponds to a year, and the discount factor is set such that the annual real
+
+interest rate is in a plausible range; in the baseline we use a discount factor of 0.975. Preferences
+
+over consumption and labor are CRRA and separable, with coefficient of relative risk aversion
+
+equal to 1 and inverse Frisch elasticity of labor supply η = 1.
+
+We follow a standard New Keynesian calibration. Price-setting firms face Rotemberg adjustment costs with parameter θ = 100 and an elasticity of substitution across intermediate
+
+goods of ε = 10. Monetary policy follows the Taylor rule specified in the main text, with
+
+coefficient φ = 1.5 on inflation and a gross steady-state real interest rate target R̄ = 1.025.
+
+Aggregate risk is two-dimensional. TFP zt follows an AR(1) process with persistence ρz =
+
+0.9 and innovation volatility νz = 0.07. The monetary policy shock et is also AR(1) with the
+
+same persistence ρe = 0.9 and volatility νe = 0.002. These values are summarized in Table 6
+
+and are chosen so that both real and nominal variables display non-trivial but stable dynamics
+
+in the simulations.
+
+Parameter
+
+nb
+
+bmax
+
+y
+
+nr
+
+rL
+
+rH
+
+nw
+
+wL
+
+wH
+
+nz
+
+ne
+
+cmin
+
+cinit
+
+ninit
+
+Πinit
+
+Ttrunc
+
+etrunc
+
+Nepoch
+
+Nwarm-up
+
+lrini
+
+lrdecay
+
+Nsample
+
+econverge
+
+Description
+
+Number of b grid points
+
+Upper bound of b grid
+
+Number of y grid points
+
+Number of r grid points
+
+Lower bound of r grid
+
+Upper bound of r grid
+
+Number of p2 grid points
+
+Lower bound of w grid
+
+Upper bound of w grid
+
+Number of z grid points
+
+Number of e grid points
+
+Minimum consumption
+
+Initial guess of consumption share
+
+Initial guess of labor supply
+
+Initial guess of inflation
+
+Truncation horizon for simulations
+
+Truncation threshold
+
+Maximum number of parameter updates
+
+Number of warm-up epochs
+
+Initial learning rate
+
+Learning-rate decay rate
+
+Baseline sampling size
+
+Convergence threshold
+
+Value
+
+200
+
+100
+
+30
+
+0.01
+
+0.04
+
+0.7
+
+1.0
+
+50
+
+10−3
+
+0.5
+
+1.5
+
+182
+
+10−2
+
+1000
+
+50
+
+5 × 10−3
+
+0.5
+
+512
+
+2 × 10−3
+
+Table 7: Hyperparameters for solving the HANK model
+
+Discretization and grids. Table 7 lists the hyperparameters and grid choices for our solution
+
+of the HANK model. The individual asset state b is discretized on a grid with nb = 200 points
+
+and an upper bound bmax = 100. The idiosyncratic income state y again takes ny = 3 values,
+
+using the same discretization as in the Huggett and Krusell-Smith applications for ease of
+
+comparison.
+
+The aggregate state combines a two-dimensional price vector (rt , wt ) with the two exogenous shocks zt and et . We approximate the real interest rate on a grid with nr = 30 points
+
+over the interval [r L , r H ] = [0.01, 0.04]. The real wage is discretized with nw = 30 points on
+
+[w L , w H ] = [0.7, 1.0]. The ranges are chosen to cover comfortably the realizations observed in
+
+equilibrium simulations, while keeping the price grids small enough for efficient training.
+
+For the aggregate shocks, we use nz = 50 grid points for log TFP zt and ne = 50 points
+
+for the monetary shock et . Both grids are obtained by discretizing the respective AR(1) processes with a standard Tauchen method. The relatively fine grids for (zt , et ) help the algorithm
+
+capture the interaction between real and nominal disturbances in the HANK model.
+
+Simulation horizon, truncation, and initial guesses. The HANK model combines persistence in both TFP and monetary shocks with sluggish price adjustment. To accommodate this
+
+accurately, we use a longer truncation horizon Ttrunc = 182 periods and a truncation tolerance
+
+etrunc = 10−2 , which implies
+
+β Ttrunc < etrunc ,
+
+so that the contribution of periods beyond Ttrunc is negligible at the scale of our numerical
+
+accuracy. As in the other applications, we impose a minimal consumption level cmin = 10−3 to
+
+avoid evaluating the utility function at zero consumption.
+
+The HANK environment includes both consumption-saving and labor-supply decisions,
+
+as well as firm price-setting. We initialize these policy functions using simple guess rules;
+
+for cinit , we set an initial constant consumption share of total cash-in-hand, a constant ninit
+
+sets an initial level of hours worked, and Πinit = 0 initializes inflation. These initial values
+
+are deliberately crude and their sole purpose is to place the policy in a reasonable region of
+
+the parameter space before learning from simulated data. In practice, the final solution is
+
+insensitive to these initial guesses once training has converged.
+
+Training and convergence. The remaining training hyperparameters follow the logic of the
+
+Huggett and Krusell-Smith applications. We use a baseline batch size of Nsample = 512 simulated trajectories per update, chosen to saturate GPU memory without generating excessive
+
+variance in the policy gradient. The convergence threshold is set at econverge = 2 × 10−3 for
+
+the HANK model, which reflects the greater complexity of the joint household-firm problem
+
+and the fact that small changes in the policy parameters can translate into larger differences in
+
+aggregate dynamics.
+
+Other aspects of the training schedule — notably the total number of epochs, the length of
+
+the warm-up phase, and the learning-rate schedule — are chosen in line with the Krusell-Smith
+
+specification discussed in Appendix A.2 and are not repeated here. In practice, the HANK
+
+model converges somewhat more slowly than Huggett and Krusell-Smith but still within a
+
+few minutes on a single GPU, as reported in Table 1 in the main text.

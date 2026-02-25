@@ -1,0 +1,59 @@
+
+\section{Conclusion}
+
+We develop a new structural reinforcement learning (SRL) approach to formulating and globally solving heterogeneous agent models with aggregate risk. We replace the cross-sectional
+
+distribution with low-dimensional prices as state variables and let agents compute price expectations directly from simulated paths. Our approach differs from standard RL in that we
+
+assume that agents have structural knowledge about the dynamics of their own individual
+
+states (e.g. their budget constraint and idiosyncratic income process). Our structural policy
+
+gradient (SPG) algorithm sidesteps the Master equation and efficiently handles heterogeneous
+
+agent models traditional methods struggle with, like those with nontrivial market-clearing
+
+conditions. By imposing that policy functions depend only on current prices (or a short price
+
+history) we keep the state space low-dimensional so that we can work with a grid-based (tabular) approach rather than deep neural networks.
+
+We implement our method in JAX and conduct computational experiments for three benchmark models in macroeconomics – the Huggett (1993) model, the Krusell and Smith (1998)
+
+model, and a one-asset HANK model with sticky prices. In all three cases, the SPG algorithm
+
+converges in only a few minutes. In the Krusell-Smith model, the resulting policies are close
+
+to those obtained from alternative global solutions of the rational expectations equilibrium.
+
+Allowing agents to condition on a longer history of lagged prices hardly moves the solution,
+
+indicating that much of the relevant information for forecasting future prices is already contained in current prices. In the HANK model, we show how the same approach can be used
+
+symmetrically on the household and firm sides to globally solve the forward-looking New
+
+Keynesian Phillips curve.
+
+The core idea of our approach – that agents form price expectations by sampling – could, in
+
+principle, serve as a building block for an empirically realistic theory of expectations formation
+
+in macroeconomics (which the algorithm in this paper is not). The plausibility of RL-based approaches is supported by evidence that reinforcement learning underpins a substantial share
+
+of human and animal learning.26 To develop such an RL-based theory of expectations formation would require several modifications to our SRL method. First, the algorithm would need
+
+to be converted to a fully online, incremental RL algorithm, with agents updating policies
+
+and value estimates continuously while interacting with their environment, rather than only
+
+after observing N price trajectories of length T. Second, the assumption that agents sample
+
+equilibrium prices in an unbiased way would likely need to be relaxed. Empirical evidence
+
+suggests that people disproportionately weight certain personal experiences (e.g. Malmendier
+
+and Nagel, 2011, 2015), so incorporating biased or experience-weighted sampling would be
+
+more realistic. Third, our SRL agents form price expectations in a model-free manner; this
+
+may be too simplistic and one could instead treat prices using a model-based RL approach.
+

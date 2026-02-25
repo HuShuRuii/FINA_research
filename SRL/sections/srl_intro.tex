@@ -1,0 +1,401 @@
+
+\section{Introduction}
+
+Many of the most important questions in macroeconomics call for studying models with heterogeneous agents and aggregate risk. A well-known difficulty is that, in standard recursive
+
+rational-expectations formulations of such models, the cross-sectional distribution of agents
+
+becomes a state variable in the Bellman equation characterizing agents’ decision problems –
+
+the “Master equation.”1 This difficulty arises even though agents do not directly “care about”
+
+the distribution, i.e. it does not enter their objective functions; instead, as is standard in competitive equilibrium models, they only care about prices. Intuitively, low-dimensional equilibrium prices do not follow a Markov process but the extremely high-dimensional distribution
+
+does. Therefore, agents with rational expectations forecast prices by forecasting distributions.
+
+While the recent literature has made some impressive advances, the extreme curse of dimensionality inherent in the Master equation remains a central computational bottleneck for
+
+global solutions to heterogeneous agent models with aggregate risk.2 Even seemingly simple
+
+model environments like a Huggett (1993) model with aggregate risk (in which there is a nontrivial market clearing condition) or a one-asset HANK model with a forward-looking Phillips
+
+curve lead to exceedingly difficult computational problems. This lack of a general and efficient global solution method limits the applicability of heterogeneous-agent macroeconomics,
+
+in particular to questions in which aggregate non-linearities play a key role.3
+
+The contribution of this paper is to develop an approach that sidesteps the Master equation
+
+by using ideas from reinforcement learning (RL). RL means learning value or policy functions
+
+of incompletely-known Markov decision processes via some form of Monte Carlo simulation
+
+(Sutton and Barto, 2018). We apply this idea to equilibrium prices and let agents compute price
+
+expectations directly from simulated paths. However, our approach differs from standard
+
+RL in that we assume that agents have structural knowledge about the dynamics of their own
+
+individual states (e.g. their budget constraint and idiosyncratic income process). We term this
+
+hybrid approach structural reinforcement learning (SRL) and our specific algorithm a structural
+
+policy gradient (SPG) algorithm.4 By imposing that policy functions depend only on current
+
+prices (or a short price history) we keep the state space low-dimensional so that we can work
+
+with a grid-based (tabular) approach rather than deep neural networks. Finally, we provide an
+
+efficient implementation in JAX (Bradbury et al., 2018; Sargent and Stachurski, 2025) that can
+
+be run on Google Colab.5
+
+SRL delivers a new and highly efficient global solution method for heterogeneous agent
+
+models with aggregate risk. Importantly, it solves problems traditional methods struggle with.
+
+We demonstrate this with two example applications. First, a model environment with a non1 See, e.g., Den Haan (1996), Krusell and Smith (1998), Schaab (2020), and Bilal (2023). The name “Master
+
+equation” comes from the mathematics literature on Mean Field Games (Cardaliaguet et al., 2019).
+
+2 There is, of course, also the global solution method of Krusell and Smith (1998) and Den Haan (1996) which
+
+assumes that agents forecast prices by forecasting moments of cross-sectional distributions rather than the distributions themselves. We discuss similarities and differences to our approach further below.
+
+3 While we do not consider such models in the present draft, we think that one particularly promising application of our global solution method will be modeling infrequent but large boom-bust cycles like financial crises.
+
+4 The “structural” in SRL is analogous to that in structural vector autoregressions (SVARs).
+
+5 Google Colab is a cloud computing platform that is easily accessible to all researchers.
+
+trivial market-clearing conditions, namely a Huggett (1993) model with aggregate risk. Second, a HANK model with a forward-looking Phillips curve. Both model environments have
+
+proven notoriously difficult for traditional methods.6 We instead solve the Huggett model in
+
+around one minute and the HANK model in around three minutes.7 For completeness, we
+
+also solve the easier Krusell and Smith (1998) model in around 55 seconds.
+
+Almost all existing global solution methods for heterogeneous agent models use dynamic
+
+programming. They either use dynamic programming to directly tackle the high-dimensional
+
+Master equation with the distribution as state variable; or, as in Krusell and Smith (1998), they
+
+use model-generated data to estimate a low-dimensional Markovian “perceived law of motion” (PLM) for moments of the distribution and then apply dynamic programming to this
+
+lower-dimensional approximate problem.8 Our SPG algorithm instead works directly with
+
+the sequential formulation of the problem and never attempts to force it into the standard
+
+Markovian structure required for applying dynamic programming. While we reduce the dimensionality of the state space in a fashion reminiscent of moment-based methods, we never
+
+estimate a PLM. Instead, we use the simple idea at the core of all RL methods that value functions are expected values – here, expected discounted lifetime utilities – and can therefore be
+
+approximated by averaging across simulated trajectories. We then find the low-dimensional
+
+policy function that maximizes expected lifetime utility using stochastic gradient ascent.
+
+The key elements of our SPG method delivering fast computations even in challenging
+
+model environments are as follows. Most importantly, as already mentioned, we replace the
+
+cross-sectional distribution with low-dimensional prices as state variables. We do this in two
+
+steps. The first step is to impose that agents observe the history of equilibrium prices but not
+
+the cross-sectional distribution. By the Wold representation theorem, this assumption does
+
+not, by itself, imply any departure from full information rational expectations. In the second
+
+step, we restrict the agents’ state space: we assume that their policy functions depend only on
+
+current prices or, perhaps, a short price history. This second assumption means that we do
+
+not solve for the model’s rational-expectations equilibrium; instead, we solve for a restricted
+
+perceptions equilibrium (RPE) in the sense of Sargent (1991), Evans and Honkapohja (2001),
+
+or Branch (2006): while agents’ expectations are restricted, they are nevertheless statistically
+
+consistent with actual equilibrium outcomes, thereby fulfilling one of the desiderata of rational
+
+expectations.
+
+The next key element delivering fast computations is the defining assumption of our SPG
+
+approach that agents have structural knowledge about the dynamics of their own individual
+
+6 There is an interesting historical note regarding the computational difficulty of the Huggett model with aggregate risk. According to Maliar and Maliar (2020), in the influential JEDC special issue on numerical solution
+
+methods for HA models with aggregate risk (Den Haan et al., 2010), all participants were initially asked to solve
+
+two benchmark models globally – the Krusell and Smith (1998) model and the Huggett (1993) model with aggregate
+
+shocks (Maliar and Maliar call this “the HANC model with savings through bonds”). However, as they report, no
+
+single team was able to successfully solve the latter model, and it was ultimately dropped from the JEDC project.
+
+7 All experiments are implemented in JAX and are run on a single NVIDIA A100 GPU on Google Colab. We
+
+will discuss the precise convergence criteria in Section 3.7.
+
+8 The PLM is simply an approximate Markov process for the low-dimensional vector of moments. The PLM
+
+may have a simple parametric (e.g. linear) functional form as in Krusell and Smith (1998) or it may be a general,
+
+non-linear function, e.g. parameterized by a neural network as in Fernández-Villaverde et al. (2023).
+
+states. In contrast to standard policy gradient methods which estimate approximate policy gradients, this assumption allows us to compute exact policy gradients by differentiating through
+
+these individual dynamics. The only part of the environment that is treated as unknown is the
+
+process for general-equilibrium prices and aggregate shocks, which is learned from simulated
+
+data. Specifically, our SPG method discretizes the individual state space so that agents’ individual states evolve according to a known transition matrix Aπ where π denotes the vector
+
+of individual policies. When computing policy gradients of lifetime utilities with respect to
+
+π, we exploit this structural knowledge and differentiate through Aπ while using simulation
+
+only for prices and aggregate shocks.
+
+Finally, our low-dimensional grid- and price-based policy functions allow us to (globally)
+
+simulate the economy forward in time in a very efficient manner. For any particular trajectory of aggregate shocks, we update the distribution using the “histogram method” of Young
+
+(2010). The fact that policy functions depend on current prices allows us to efficiently handle
+
+non-trivial market clearing conditions like in Huggett (1993). Intuitively, policy functions double
+
+as individual supply schedules. Integrating across the distribution to obtain the corresponding
+
+aggregate supply schedule, it is then straightforward to solve for equilibrium prices at each
+
+point in time along a simulation path. Our treatment of market clearing mirrors the RL literature’s distinction between agents and environment: agents can interact with their environment
+
+under any given policy including suboptimal ones; finding optimal policies is conceptually
+
+separate. In line with this dichotomy, we treat market clearing as part of the environment and
+
+find equilibrium prices also for suboptimal policies. This approach differs from standard practice in macroeconomics which first finds optimal policies given prices in an inner loop and
+
+then finds equilibrium prices in an outer loop.
+
+In summary, SRL enables efficient global solutions of heterogeneous-agent models with full
+
+cross-sectional distributions. Importantly, while our restricted state space (and use of an RPE)
+
+simplifies agents’ decision problems inside the model, it does not diminish the rich dynamics of
+
+the economy which still evolves stochastically and non-linearly, driven by the policy functions
+
+of forward-looking heterogeneous agents.
+
+We illustrate our method in three benchmark environments: a Huggett (1993) economy,
+
+the classic Krusell and Smith (1998) model, and a one-account heterogeneous agent New Keynesian (HANK) model with sticky prices. In all three cases, our price-based SRL algorithm
+
+converges quickly on modern hardware: solving the Krusell-Smith model takes 55 seconds
+
+while the Huggett and HANK models – typically viewed as more challenging because of
+
+their non-trivial market-clearing conditions and, in the HANK case, a forward-looking Phillips
+
+curve – take only modestly longer (about 75 seconds and roughly 3 minutes, respectively). We
+
+present extensive tests to verify the accuracy of our solutions. For the Krusell-Smith model, our
+
+method produces equilibrium dynamics that closely match the rational expectations obtained
+
+using deep-learning-based methods. As a complementary exercise, we extend the information
+
+set to allow agents to condition on lagged prices and show that this richer price history does
+
+not meaningfully change the solution, suggesting that current prices already contain most of
+
+the information that matters for behavior. Finally, in the HANK application we show how to
+
+use our approach to solve the household and firm problems jointly, using the same SPG algorithm not only for consumption-saving decisions but also for the forward-looking price-setting
+
+problem of firms.
+
+Relation to Economics Literature. A huge theoretical and quantitative literature studies environments in which heterogeneous households are subject to uninsurable idiosyncratic shocks.
+
+See Krusell and Smith (2006), Heathcote et al. (2009), Quadrini and Rı́os-Rull (2015), Krueger
+
+et al. (2016), Sargent (2023), and Auclert et al. (2025a) for surveys.
+
+Within this literature, a sizable subliterature is concerned with the global solution of heterogeneous agent models with aggregate risk. A first strand of the literature tackles the Master
+
+equation directly, typically using deep neural networks – see e.g. Han et al. (2021), Maliar et
+
+al. (2021), Azinovic et al. (2022), Kahou et al. (2021), Duarte et al. (2024), Huang (2023), Kase et
+
+al. (2024), Gu et al. (2024), Payne et al. (2024), and Gopalakrishna et al. (2024). Our approach
+
+differs from all of these papers in that we sidestep the Master equation rather than attempting
+
+to “tame the curse of dimensionality” inherent in it. Among these papers, Han et al. (2021)
+
+is most related to and influential for our work: like them, we learn value and policy functions of heterogeneous agents via simulation; also like them, we take advantage of agents’
+
+structural knowledge of their own individual dynamics – what we have termed a “structural”
+
+RL approach. The key difference is that Han et al. (2021) include the high-dimensional crosssectional distribution in the agents’ state space whereas we replace this distribution with lowdimensional prices as state variables.
+
+A second strand of the literature estimates a low-dimensional Markovian PLM for moments of the distribution and then applies dynamic programming as in Krusell and Smith
+
+(1998) and Den Haan (1996). Similar to us, this approach sidesteps the Master equation by
+
+working with a low-dimensional state space that does not include the distribution. One variant of this approach formulates PLMs directly in terms of equilibrium prices so that – like
+
+in our approach – this low-dimensional state space includes prices.9 However, this approach
+
+introduces an additional fixed-point loop in which the perceived law of motion is repeatedly
+
+updated and the associated dynamic programming problem re-solved, a procedure that is
+
+computationally slow in many economically interesting environments, particularly those with
+
+non-trivial market-clearing conditions. By contrast, we work directly with the problem’s sequential formulation and never estimate a PLM.
+
+Our approach is also related to the adaptive learning literature (e.g. Bray, 1982; Marcet and
+
+Sargent, 1989; Evans and Honkapohja, 2001). Jacobson (2025) and Giusto (2014) apply adaptive learning in heterogeneous agent models with aggregate risk. RL and adaptive learning are
+
+linked because both are special cases of a more general set of stochastic approximation methods (Robbins and Monro, 1951). Similar to the learning literature, our approach computes an
+
+equilibrium that is “self-confirming” (Sargent, 1999; Cho and Sargent, 2016).10 But because
+
+9 See for example Lee and Wolpin (2006), Storesletten et al. (2007), Gomes and Michaelides (2008), Favilukis et
+
+al. (2017), Llull (2018), Kaplan et al. (2020), and Fernández-Villaverde et al. (2024b).
+
+10 Agents form price expectations from data generated by the economy in which they live. Their expectations
+
+are therefore statistically consistent with actual equilibrium outcomes but may be incorrect for events that are
+
+we restrict the individual state space to not include the distribution, our self-confirming equilibrium is an RPE (Sargent, 1991; Branch, 2006). In the language of Guarda (2025), our RPE
+
+features expectations that are both “narrow” and “short”: narrow because they do not condition on the distribution and short because they do not condition on a long price history.11
+
+Our focus on a low-dimensional vector of equilibrium variables links SRL to the “sequence
+
+space” approach of Auclert et al. (2021) and Auclert et al. (2025b). The difference is that SRL
+
+handles stochastic price sequences outside steady-state neighborhoods. By using Monte Carlo
+
+simulation, it yields a global rather than local solution method in sequence space.12
+
+To be clear, we do not view SRL as an empirically realistic model of human learning.13 Instead, it is an efficient computational method for finding RPEs in heterogeneous agent models
+
+with aggregate risk. Nevertheless, as we note in the conclusion, the core idea of our approach –
+
+agents forming expectations about equilibrium prices by sampling – could, in principle, serve
+
+as a building block for an empirical theory of expectations formation in macroeconomics.
+
+Relation to RL Literature.
+
+Our approach connects to several central ideas in the RL literature.
+
+As already mentioned, in RL, agents learn optimal policies in Markov decision processes using
+
+sampled trajectories (Sutton and Barto, 2018). RL is at the core of some impressive advances
+
+in artificial intelligence, e.g. RL agents learning to play Go and Atari games better than humans (Mnih et al., 2015; Silver et al., 2016, 2017) or post-training of “reasoning” large language
+
+models (LLMs OpenAI, 2024; DeepSeek-AI, 2025).14
+
+Conceptually, our SRL method adopts the RL principle of optimizing policies using Monte
+
+Carlo estimates of expected returns. But it exploits full structural knowledge of each agent’s
+
+reward function and individual transition dynamics to compute exact end-to-end policy gradients. Only equilibrium objects are treated as unknown parts of the environment. In this
+
+sense, our SRL approach sits between model-based and model-free RL: we differentiate exactly through the known micro-level transition probabilities while learning the induced macro
+
+environment from simulation. Also see Han et al. (2021).
+
+While classical RL demonstrates considerable power in solving complex environments, its
+
+general-purpose nature implies suboptimal performance in specialized domains. For instance,
+
+when applied to the computationally intensive post-training phase of LLMs, classical RL algorithms introduce substantial overhead. To address this, Rafailov et al. (2024) reformulated RL
+
+infrequently observed (e.g. events off the equilibrium path).
+
+11 Our notion of equilibrium is also closely related to Guarda’s nonparametric restricted perceptions equilibrium
+
+(NRPE). The difference is that Guarda defines his NRPE recursively and uses dynamic programming whereas our
+
+formulation is sequential.
+
+12 Recent work has explored global solution methods in sequence space using high-dimensional approximation
+
+techniques, e.g., Azinovic-Yang and Žemlička (2025).
+
+13 Moll (2025) proposed three criteria for alternatives to rational expectation in heterogeneous agent models: (1)
+
+computational tractability, (2) consistency with empirical evidence, and (3) (some) immunity to the Lucas critique.
+
+Our SRL approach delivers on (1) and (3) but not (2).
+
+14 RL ideas have also been applied in economics. Besides Han et al. (2021), see for example Barberis and Jin
+
+(2023), Chen et al. (2023), de la Barrera and de Silva (2024), Calvano et al. (2020), Dou et al. (2025), and the references in Fernández-Villaverde et al. (2024a) for applications in finance and macroeconomics. RL ideas have also
+
+been applied in game theory (e.g. Erev and Roth, 1995, 1998; Fudenberg and Levine, 2016) but using a different
+
+formulation that does not work with value functions and instead directly reinforces the “propensities” of choosing
+
+strategies.
+
+from human feedback (RLHF) as a deep learning problem and proposed the Direct Preference
+
+Optimization (DPO) algorithm, which significantly reduces computational cost and enhances
+
+training stability. Similarly, Hu et al. (2020) and Freeman et al. (2021) introduced differentiable physics engines – DiffTaichi and Brax (the latter also implemented using JAX) – that
+
+enable gradient computation directly from built-in physical equations.15 This allows policy
+
+updates via exact gradient methods, eliminating the need for sampling-based approximations
+
+and thereby improving both accuracy and efficiency. In Brax, this method is termed “analytical
+
+policy gradient,” which shares conceptual foundations with our SRL framework.
+
+Heterogeneous-agent models in macroeconomics can be viewed as a special case of the
+
+more general Mean Field Games (MFGs) studied in the mathematics literature (e.g. Lasry and
+
+Lions, 2007; Cardaliaguet et al., 2019). In the RL literature, the work closest to ours is therefore
+
+the line of research that applies RL methods to solve MFGs (e.g. Yang et al., 2018; Laurière et
+
+al., 2022, 2024; Xu et al., 2023; Wu et al., 2025). With the exception of Wu et al. (2025), none
+
+of these papers study the case with aggregate risk (or “common noise” in MFG terminology)
+
+considered here. More importantly, none of the papers applying RL to MFGs exploit the structural knowledge of agents’ individual dynamics. Specifically, they do not exploit the transition
+
+matrix (or infinitesimal generator) for individual states Aπ and its known dependence on the
+
+policy π, even though this matrix (operator) is typically available and even used for updating
+
+the distribution.16
+
+In order to sidestep the Master equation and keep the state space manageable, we assume
+
+a form of partial observability: agents do not observe the high-dimensional distribution which
+
+is the system’s underlying Markov state and instead observe low-dimensional prices. That
+
+being said, a similar SRL approach can also be applied to fully observable MFGs as in Han et
+
+al. (2021).
+
+Roadmap. Section 2 describes the SRL method and Section 3 reports our computational
+
+experiments. Section 4 concludes.
+

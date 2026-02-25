@@ -1,0 +1,925 @@
+\section{Sidestepping the Master Equation via Structural Reinforcement Learning}
+
+This section describes our SRL method. Rather than solving the Master equation (11) with
+
+the full cross-sectional distribution as a state variable, we work with a low-dimensional state
+
+consisting of prices pt (and the aggregate shock zt ). We adapt RL ideas to let agents learn
+
+optimal behavior from simulated equilibrium data, taking (st , zt , pt ) as their state. In contrast
+
+to standard RL, our SRL method exploits agents' structural knowledge of their own individual
+
+dynamics.
+
+\subsection{The Key Idea of Reinforcement Learning: Monte Carlo instead of Bellman}
+
+Before proceeding, we briefly summarize the basic ideas of RL.17 RL means learning value or
+
+policy functions of incompletely-known Markov decision processes via some form of Monte
+
+Carlo simulation. The key problem addressed by RL is: what to do in dynamic optimization
+
+problems in which the agent does not know the exact environment she is operating in, specifically the stochastic process for the underlying state variables? The key insight of RL is that, in
+
+such environments, one can still approximate optimal value and policy functions as long as one
+
+can simulate.
+
+A simple analogy is how to compute the expected value E[ x ] of a random variable x. The
+
+R
+
+standard way is to compute E[ x ] = x f ( x )dx for a known probability distribution f ( x ). But
+
+what if f is unknown? In such cases, one can often still sample from f and approximate the
+
+expected value E[ x ] with the sample mean x̄ = N1 ∑nN=1 xn .
+
+Building on this intuition, consider the question of how to calculate the following value
+
+function:
+
+"
+
+v0 = E
+
+∞
+
+\#
+
+∑ β u( pt ) ,
+
+t
+
+t =0
+
+where u is a utility function and pt is some exogenous stochastic process. The standard approach is to use dynamic programming: assume that pt is Markov with known transition
+
+probabilities f ( p0 | p); then write and solve the Bellman equation
+
+v( p) = u( p) + β
+
+Z
+
+v( p0 ) f ( p0 | p)dp0 .
+
+An alternative approach is to use Monte Carlo simulation: simply sample N trajectories \{ pnt \}Tt=0
+
+for n = 1, ..., N and approximate the expected value v0 as
+
+v0 ≈ vb0 =
+
+1 N T t
+
+∑ β u( pnt ).
+
+N n∑
+
+=1 t =0
+
+This basic idea – to compute expected values via simulation – lies at the heart of all RL algorithms. Crucially this simulation-based approach does not require knowledge of the transition
+
+probabilities f . It also works directly with the sequential formulation of the problem. In particular, it is unnecessary to force the problem into the standard Markovian structure required
+
+for applying dynamic programming, e.g. by estimating a perceived law of motion for prices
+
+pt . As we explain next, our SRL approach to heterogeneous agent macroeconomics uses this
+
+same approach to compute expectations about equilibrium prices.
+
+17 See Sutton and Barto (2018) and Zhao (2025) for brilliant textbook treatments. Also see Murphy (2025) and
+
+Silver (2015).
+
+\subsection{Revisiting the Agents’ Decision Problem}
+
+Recall that agents choose \{ci,t \} to solve
+
+vi,0 = max E
+
+\{ci,t \}
+
+ ∞
+
+∑ β u(ci,t )
+
+t
+
+
+
+s.t.
+
+si,t+1 ∼ Ts (· | si,t , ci,t , zt , pt ),
+
+pt = P∗ ( Gt , zt ).
+
+(12)
+
+t =0
+
+We begin by specifying what individuals observe and on what they condition their decisions.
+
+Assumption 1 (Information). At date t, an individual observes the entire history of aggregate prices
+
+\{ pt , pt−1 , . . .\}, but not the cross-sectional distribution gt .
+
+Assumption 1 rules out direct conditioning on the distribution but does not, by itself, imply
+
+any departure from full information rational expectations. Under standard regularity conditions, a stationary price process \{ pt \} admits a Wold representation and can be written as an
+
+infinite-order vector moving average process
+
+∞
+
+pt = ∑ κ j ε t− j ,
+
+j =0
+
+for some coefficients \{κ j \} and white-noise innovations ε t . Under additional restrictions (invertibility), the stationary price process also has an equivalent VAR(∞) representation,
+
+
+
+p t +1 ∼ T p · p t , p t −1 , p t −2 , . . . ,
+
+so that the infinite history of prices is sufficient for forecasting under rational expectations. In
+
+this sense, the price history is rich enough to recover all information that is relevant to the
+
+agents, even though they never observe the cross-sectional distribution directly. Note that the
+
+Wold representation theorem effectively converts the recursive formulation for the price process (10) into a sequential stochastic process. It is also worth pointing out that, in the language
+
+of the RL literature, Assumption 1 is a “partial observability” assumption.
+
+Of course, working with the infinite price history is infeasible in practice. Instead, starting from the rational expectations benchmark in Assumption 1, we restrict attention to lowdimensional summaries of this history. We begin with the most restrictive case, in which agents
+
+condition only on current prices.
+
+Assumption 2 (Restricted state space). Agents’ decision rules (policy functions) take the form
+
+π ( s t , z t , p t ),
+
+so that policies do not depend on lagged prices.18
+
+18 Whether z
+
+t is payoff-relevant depends on the particular application. If, conditional on ( st , pt ), zt affects neither
+
+current payoffs nor individual transitions, then it can be dropped from the state vector for the individual’s decision
+
+problem. For example, zt is directly payoff-relevant in the Huggett model because it scales current
+
+income yi,t zt . By contrast, in our Krusell-Smith and HANK applications in Sections 4.2 and 4.3, zt matters for
+
+individuals only through equilibrium prices, so policies could equivalently be written as π (st , pt ). For notational
+
+uniformity we keep zt in π (st , zt , pt ), but in these cases it is redundant from the household’s point of view.
+
+Assumption 2 imposes a particular restriction on perceptions: agents treat the current price
+
+vector as a sufficient statistic for decision making, even though in the true equilibrium the
+
+price process is not Markov in pt alone. Within this class of policies we then solve problem (12)
+
+by optimizing over many simulated equilibrium paths.
+
+In Section 4.1 we relax Assumption 2 and allow policies to depend on a short history of
+
+past prices. More generally, one could let the policy depend on the hidden state of a recurrent
+
+neural network that summarizes the price history; this fits directly into the same RL-based
+
+framework (Hausknecht and Stone, 2017).
+
+Given any (possibly suboptimal) policy π (s, z, p), the discretization of individual states on
+
+a finite grid $s \in \{s_1, \ldots, s_J\}$ allows us to write the policy in vector form
+$\boldsymbol{\pi}(z, p) = (\pi(s_1,z,p), \ldots, \pi(s_J,z,p))^T$.
+
+We represent the cross-sectional distribution as a vector gt , and the individual
+
+transitions induced by the policy are encoded in a sparse transition matrix Aπ (z,p) .
+
+\subsection{Sequential Restricted Perceptions Equilibrium}
+
+Under Assumptions 1 and 2, an individual’s relevant state is simply (st , zt , pt ). Given this
+
+restricted state space, we define equilibrium as a variant of a restricted perceptions equilibrium
+
+(RPE) in the sense of Sargent (1991) and Branch (2006). Because we work directly with the
+
+sequential formulation of the agents’ problem, we term it a “sequential RPE”.
+
+Definition 1 (Sequential restricted perceptions equilibrium). A sequential restricted perceptions
+
+equilibrium consists of a pair of mappings (π ∗ (s, z, p), P∗ (g, z)) such that:
+
+1. Optimality. Given a stochastic process \{zt \}t≥0 as well as a price process \{ pt \}t≥0 generated by
+
+pt = P∗ (gt , zt ), the policy π ∗ = \{c∗ , b0∗ \} ∈ Π solves
+
+max E
+
+π ∈Π
+
+ ∞
+
+∑ β u(c(st , zt , pt ))
+
+t
+
+
+
+s.t.
+
+st+1 ∼ Ts (· | st , π (st , zt , pt ), zt , pt ),
+
+t =0
+
+where c(s, z, p) is the consumption component of π (s, z, p). Here Π denotes the set of measurable
+
+policies π : S × Z × P → C × B that satisfy the budget and borrowing constraints.
+
+2. Market clearing. For every t, the market clearing conditions hold: in the Huggett model
+
+Z
+
+b0 (s, zt , pt ) dGt (s) = 0,
+
+(13)
+
+where b0 (s, z, p) is the saving component of π (s, z, p). The solution is a mapping pt = P∗ (gt , zt ).
+
+3. Consistency. When all agents follow π ∗ , the cross-sectional distribution evolves according to
+
+gt+1 = ATπ ∗ (zt ,pt ) gt ,
+
+where Aπ (z,p) is the transition matrix induced by Ts and π and prices are given by pt =
+
+P ∗ (gt , z t ).
+
+This equilibrium notion has three features that are important for our purposes. First, it is a
+
+sequential equilibrium: We work directly with time paths of states and prices rather than with
+
+a recursive formulation in terms of a Markov state. Second, it is self-confirming in the sense
+
+that, given their information and policy, agents’ beliefs about price dynamics are consistent
+
+with the equilibrium price process along the realized paths. Third, it features restricted perceptions because agents condition only on prices, not on the full distribution. This both reflects a
+
+realistic informational environment and greatly reduces the dimensionality of the state space.
+
+As mentioned in the introduction, in the language of Guarda (2025), agents’ beliefs are both
+
+“narrow” and “short”.
+
+These features make it natural to use RL. In practice, we parameterize the low-dimensional
+
+policy function π (s, z, p) on the discretized state space and approximate the maximization
+
+problem (12) by evaluating it along many simulated equilibrium paths. In the next subsection,
+
+we describe how to simulate these trajectories efficiently under a given candidate policy.
+
+\subsection{Simulating the Economy for Given Policy Functions}
+
+Starting from an initial pair (g0 , z0 ), the simulated economy evolves according to
+
+zt+1 ∼ Tz (· | zt )
+
+gt+1 = ATπ (zt ,pt ) gt
+
+p t = P ∗ (gt , z t ).
+
+Updating the aggregate shock zt+1 is straightforward. For the distribution gt+1 , we adopt
+
+Young (2010)’s non-stochastic simulation method and extend it to a full matrix formulation: the
+
+policy function induces a sparse transition matrix over the grid, and the distribution evolves
+
+deterministically via matrix-vector multiplication. The main computational difficulty lies in
+
+the last step. In some models, such as Krusell and Smith (1998), the price functional P∗ (gt , zt )
+
+is available in closed form. In others, such as the Huggett model, prices are
+
+defined only implicitly by market-clearing conditions. Computing such implicit prices represents a significant challenge. Most existing numerical methods solve a non-linear root-finding
+
+problem in every period of the simulation, typically making this step the slowest part of the
+
+algorithm; see for example Krusell and Smith (1997), Schaab (2020), as well as the historical
+
+note in footnote 6 in the introduction. Our method delivers an efficient way to compute these
+
+implicit prices along simulated paths. We show next how this works in the Huggett economy
+
+there.
+
+Efficient handling of non-trivial market clearing conditions. In the Huggett model, the
+
+equilibrium interest rate pt = rt is pinned down by the requirement that bonds must be in
+
+zero net supply, see (6). The key insight that allows us to find equilibrium prices efficiently
+
+is that, due to Assumption 1, individual policy functions π (s, z, p) depend on current prices p
+
+rather than the cross-sectional distribution Gt (s). In addition to the much lower dimensionality
+
+of p as compared to Gt (s), this has another key payoff: policy functions double as individual supply schedules which can easily be aggregated to obtain aggregate supply curves at each point in
+
+time which also depend on the current price p. Given an aggregate supply curve as a function
+
+of p, it is then straightforward to solve for the equilibrium price pt = P∗ ( Gt , zt ).
+
+To see this in more detail, consider the market clearing condition in our restricted perceptions equilibrium (13). Equivalently,
+
+St ( p t , z t ) = 0
+
+where
+
+St ( p, z) =
+
+Z
+
+b0 (s, z, p)dGt (s)
+
+is aggregate savings implied by the individual saving policy function b0 (s, z, p). The key observation is that the individual saving policy function depends on the interest rate p. This
+
+means that varying p traces out an entire individual supply schedule p 7→ b0 (s, z, p). Aggregating yields the analogous aggregate supply schedule p 7→ St ( p, z). The equilibrium price can
+
+then be computed time-period by time-period along each simulated path. Our approach of
+
+including current prices in the state space to clear markets at each point along a simulation is
+
+similar to Krusell and Smith (2006, Section 3.5).
+
+0.06
+
+z = 0.97, r = 0.031
+
+z = 0.99, r = 0.027
+
+z = 1.00, r = 0.024
+
+z = 1.01, r = 0.021
+
+z = 1.03, r = 0.017
+
+z = 1.05, r = 0.017
+
+Total assets B
+
+Interest rate r
+
+0.05
+
+0.04
+
+0.03
+
+0.02
+
+0.01
+
+0.6
+
+0.4
+
+0.2
+
+0.0
+
+0.2
+
+0.4
+
+Aggregate saving S(r, z)
+
+0.6
+
+0.8
+
+Figure 1: Aggregate saving function S(r, z) in the Huggett economy
+
+Finding the equilibrium interest rate can be numerically implemented in a variety of ways.
+
+In our experiments, we found that the simplest way of doing this is to use the discretized
+
+representation. Once we know the vectors gt and b0 (z, p) for the discretized cross-sectional
+
+distribution and saving policy function, we can compute the entire saving schedule at time t
+
+for all grid values of (z, p) as
+
+St ( p, z) = b0 (z, p)T gt .
+
+(14)
+
+Figure 1 plots the aggregate saving function p 7→ S( p, z) in the Huggett economy at some
+
+date t, with each line corresponding to a grid value of z. Given the realized aggregate state
+
+zt , we select the corresponding supply curve St (·, zt ) and determine the interest rate pt so that
+
+St ( pt , zt ) = 0. In our numerical experiments the function St ( p, z) is weakly increasing in p
+
+under the optimal policy b0 (z, p) and in a neighborhood of the market-clearing price, so the
+
+solution is unique.19 However, market clearing is part of the agents’ environment and needs
+
+to hold for all candidate policy functions, not just at the optimal policy. As we explain in
+
+Section 3.7 below, we solve for optimal policies π (s, z, p) = \{c(s, z, p), b0 (s, p, z)\} iteratively
+
+starting from some initial guess. This means that it is important to have a reasonable initial
+
+guess for b0 (s, z, p) that delivers an upward-sloping aggregate saving supply under this initial
+
+guess.20
+
+Both the dot product in (14) and the interpolation step are simple vector operations and
+
+are very fast when implemented with JAX on GPUs. It is therefore computationally cheap to
+
+compute the entire vector of aggregate savings S( p, z) along each simulated trajectory. Given
+
+this precomputed saving schedule, we use linear interpolation to find the market clearing price
+
+pt in each period and trajectory instead of calling a separate non-linear solver inside an outer
+
+fixed-point iteration as is common in existing methods (Krusell and Smith, 1997; Schaab, 2020).
+
+\subsection{Exploiting Agents’ Structural Knowledge of their Individual Dynamics}
+
+Standard RL applications, such as board games or Atari environments, typically treat both
+
+rewards and state transitions as unknown and learn them entirely from simulated data. Economic models are different. Agents know their preferences and they know how their choices
+
+affect their own individual state next period (Han et al., 2021). We make explicit use of this
+
+structure and refer to our approach as structural reinforcement learning (SRL).
+
+The value for an individual i starting from state (s, z, p) and following a given policy
+
+π (s, z, p) = \{c(s, z, p), b0 (s, z, p)\} is
+
+vπ (s, z, p) = E
+
+ ∞
+
+
+
+∑ β u(c(si,t , zt , pt )) si,0 = s, z0 = z, p0 = p .
+
+t
+
+(15)
+
+t =0
+
+Here vπ (s, z, p) is the value associated with a fixed policy π and a given stochastic process for
+
+the aggregate variables ( pt , zt ). The evolution of the individual state si,t is governed by the
+
+known transition kernel Ts or, when individual states are discretized, by the known transition
+
+matrices Aπ (zt ,pt ) . Agents know this mapping from current states and actions into next-period
+
+states because it is implied by their budget constraint and the exogenous process for idiosyn19 On the bounded price grid \{ p \}K
+
+K
+
+k k=1 we compute \{ St ( pk , zt )\}k=1 and find the two adjacent points that bracket
+
+the root. If
+
+S t ( p k , z t ) ≤ 0 ≤ S t ( p k +1 , z t ),
+
+we set the market-clearing price to the linear interpolant
+
+pt = pk −
+
+
+
+St ( p k , z t )
+
+p
+
+− pk .
+
+S t ( p k +1 , z t ) − S t ( p k , z t ) k +1
+
+20 For example, in our numerical experiments with power utility u0 ( c ) = c−σ , we have found that the initial
+
+
+
+
+
+
+
+yz
+
+yz 
+
+yz
+
+guess c0 (b, y, z, r ) = 1 + r − ( β(1 + r ))1/σ b + r and b00 (b, y, z, r ) = ( β(1 + r ))1/σ b + r − r works well.
+
+This would be the optimal policy function if all of (y, z, r ) were fixed over time rather than varying stochastically.
+
+One can also use this same initial guess but with a parameter σ0 < σ in place of σ which makes saving more
+
+responsive to the interest rate r and thus the aggregate saving supply better behaved.
+
+cratic income, which we assume agents know, i.e. agents have rational expectations about
+
+their idiosyncratic income process. By contrast, agents do not know the law of motion for the
+
+aggregate variables ( pt , zt ) which are determined in general equilibrium from everyone’s decisions and market clearing. Under rational expectations, one would require agents to know
+
+the stochastic process for ( pt , zt ) exactly and to treat (gt , zt ) as a Markov state so that prices
+
+become a function pt = P∗ (gt , zt ). In our setup, agents instead take the process for ( pt , zt ) as
+
+an object to be learned from simulated data.
+
+SRL takes advantage of this separation between individual and aggregate dynamics by
+
+partitioning the state space (s, z, p) into individual states s and aggregate states (z, p) and treating
+
+these differently. We use the structural model to simulate individual transitions and payoffs
+
+exactly, i.e., conditional on a policy π (z, p), we treat the transition matrix Aπ (z,p) and hence
+
+the mapping (st , zt , pt ) 7→ st+1 as known by the agent and use this matrix to compute the
+
+value function the agent maximizes – see (16) below. We then use RL only to deal with the
+
+low-dimensional but non-Markov aggregate state (zt , pt ).
+
+In particular, our algorithm updates the policy π so as to increase vπ (s, z, p) based on simulated histories of (zt , pt ) rather than using a Bellman equation on the high-dimensional state
+
+space (gt , zt ). This keeps the learning problem low-dimensional while preserving the full
+
+heterogeneous-agent structure of the economy. While the simulations feature the full crosssectional distribution which evolves stochastically and non-linearly over time, we never approximate that distribution nor any mapping from it. Instead only low-dimensional prices
+
+enters the agent’s state.
+
+\subsection{Problem To Be Solved}
+
+The value vπ (s, z, p) associated with a given policy π (s, z, p) was defined in (15). The agent’s
+
+problem is to choose a policy π = (c, b0 ) to maximize her value vπ given an initial state (s, z, p).
+
+It is convenient to use discretized notation and rewrite the value function vπ (s, z, p) in vector
+
+form as
+
+vπ (z, p) = E
+
+ ∞
+
+
+
+∑ β Aπ,0→t u(c(zt , pt )) z0 = z, p0 = p ,
+
+t
+
+(16)
+
+t =0
+
+where π (z, p) = \{c(z, p), b0 (z, p)\} is the discretized policy vector and
+
+Aπ,0→t = Aπ (z0 ,p0 ) × · · · × Aπ (zt−1 ,pt−1 )
+
+(17)
+
+denotes the transition matrix of individual states between time 0 and time t under a particular
+
+trajectory \{zτ , pτ \}tτ−=10 . Note again our partitioning of the state space into s and (z, p): the
+
+transition matrices Aπ (zt ,pt ) keep track of all s-transitions while the expectation in (16) is taken
+
+only over (z, p)-trajectories.21 Importantly, the transition matrix Aπ (zt ,pt ) encodes all relevant
+
+structural knowledge about the dynamics of agents’ own individual states s. The presence
+
+of this transition matrix in the optimization objective (16) is why we refer to our approach as
+
+21 Tracking value vectors using the transition matrix A
+
+π in this way is analogous to the use of such matrices in
+
+finite-difference methods for continuous-time HJB equations and HA models (Achdou et al., 2021).
+
+structural RL.
+
+When agents choose policies π they take as given the evolution of equilibrium prices which
+
+evolve according to the true general-equilibrium dynamics,
+
+p t = P ∗ (gt , z t ),
+
+gt+1 = ATπ (zt ,pt ) gt ,
+
+zt+1 ∼ Tz (· | zt ),
+
+(18)
+
+with (g0 , z0 ) given.
+
+The agents’ objective is to find a policy vector π (z, p) that maximizes vπ (z, p) for all initial
+
+values (z, p) taking as given the evolution of equilibrium prices in (18). Note that maximizing
+
+agents take into account the dependence of the transition matrix Aπ,0→t in (16) and (17) on the
+
+policy π; in contrast, because they take prices as given, they do not take into account how price
+
+dynamics depend on the policy π via the term ATπ (zt ,pt ) in the Chapman-Kolmogorov equation
+
+for gt in (18).22
+
+An important feature of this problem is that, while the true state of the economy (gt , zt )
+
+is extremely high-dimensional (because gt is a full cross-sectional distribution), the state that
+
+enters agents’ policy and value functions (st , zt , pt ) is low-dimensional. The agent does not
+
+work with a perceived law of motion for prices. Instead, she treats the process for ( pt , zt )
+
+as given, observes realized sequences along simulated paths, and bases decisions on these
+
+realizations. As a result, there is no inner-outer fixed-point loop over perceived price laws of
+
+motion as in Krusell and Smith (1998). Our algorithm therefore operates directly on the lowdimensional state (st , zt , pt ) from the agent’s perspective, while the high-dimensional state
+
+(gt , zt ) only appears in the background through the law of motion for prices.
+
+\subsection{Implementation: Structural Policy Gradient Algorithm}
+
+To evaluate a candidate policy π, we approximate the value vector using Monte Carlo simulation as explained in Section 3.1. We simulate N trajectories of the economy under this policy
+
+and form the sample analog of the value vector
+
+1 N
+
+v
+
+bπ =
+
+N n∑
+
+=1
+
+ T
+
+∑
+
+t
+
+n
+
+n n
+
+β Aπ,0
+
+→t u (c( zt , pt ))
+
+
+
+,
+
+(19)
+
+t =0
+
+where T is a large truncation horizon and the simulated paths are generated from
+
+pnt = P∗ (gtn , znt ),
+
+gtn+1 = ATπ (zn ,pn ) gtn ,
+
+t
+
+t
+
+znt+1 ∼ Tz (· | znt ),
+
+(20)
+
+starting from initial conditions g0n ∼ ψg and z0n ∼ ψz . Thus, v
+
+bπ in (19) is the sample analog of
+
+vπ (z, p) in (16) averaged over the initial distribution of (z, p) induced by the initial distribution
+
+of (g, z), i.e. v
+
+bπ ≈ Ez0 ∼ψz ,g0 ∼ψg [vπ (z0 , p0 )] with p0 = P∗ (g0 , z0 ).
+
+In practice, we work with a scalar objective that averages over initial individual states. Let
+
+d0 denote the uniform distribution on the individual-state grid, so that d0 (s j ) = 1/J. We then
+
+22 As we explain below, in our SPG algorithm which maximizes the Monte Carlo counterpart to (16) with respect
+
+to π, we apply a stop-gradient to simulated prices to ensure that agents take prices as given.
+
+maximize
+
+L(θ ) = dT0 vbπ .
+
+(21)
+
+Because our state space is low-dimensional, we can work with a grid-based (tabular) approach
+
+and we parameterize the policy as
+
+
+
+ 
+
+
+
+π ( z1 , p1 )
+
+π ( s1 , z1 , p1 )
+
+
+
+ 
+
+
+
+..
+
+..
+
+=
+
+,
+
+θ=
+
+.
+
+.
+
+
+
+ 
+
+
+
+π (zK , p L )
+
+π (s J , zK , p L )
+
+where J, K, and L are the numbers of grid points on the s, z, and p grids. That is, the parameter
+
+vector θ is simply the J × K × L-dimensional vector of values of the policy on the (s, z, p) grid.23
+
+Furthermore, in practice it is costly to compute the high-dimensional matrix multiplications
+
+n
+
+Aπ,0
+
+→t = Aπ (z0n ,p0n ) × · · · × Aπ (znt−1 ,pnt−1 ) in (19). After substituting in (21), we therefore rewrite
+
+the optimization objective as
+
+L(θ ) =
+
+1 N T t n T
+
+∑ β (dπ,t ) u(c(znt , pnt )),
+
+N n∑
+
+=1 t =0
+
+n = (An
+
+T
+
+where dπ,t
+
+π,0→t ) d0 is the cross-sectional distribution of s at time t under policy π start-
+
+ing from the initial uniform distribution d0 . We compute this distribution iteratively by solving
+
+n
+
+n
+
+T n
+
+the Chapman-Kolmogorov equation dπ,t
+
++1 = ( Aπ (zt ,pt ) ) dπ,t forward in time using the Young
+
+(2010) method. 24
+
+Figure 2: Computational graph
+
+Figure 2 presents a computational graph that illustrates the algorithm. Since the mapping
+
+23 One can instead parameterize the policy as a neural network π ( s, z, p; θ ).
+
+For the low-dimensional policy
+
+functions in this paper, a grid-based parameterization is sufficient.
+
+24 Azinovic et al. (2022) use the Young (2010) method in a related fashion to construct an optimization objective
+
+involving a discretized cross-sectional distribution. However, they use neural networks to minimize Euler equation
+
+errors whereas we use a grid-based approach to maximize a value vector.
+
+from parameters θ to the objective L(θ ) is differentiable, we use stochastic gradient ascent (or
+
+variants) to update
+
+θ k+1 = θ k + ηk ∇θ L(θ k ),
+
+where ηk is the learning rate at iteration k. A stop-gradient is applied to the price update
+
+pnt = P∗ (gtn , znt ) in (20) so that, when computing gradients, prices are treated as exogenous.
+
+This is consistent with the standard notion of competitive equilibrium, in which agents take the
+
+process for ( pt , zt ) as given and do not internalize how their behavior affects price formation.
+
+Finally, we assess convergence of the algorithm by tracking the change in the policy vector θ
+
+over the (s, z, p) grid. Convergence is achieved when the L∞ (sup) norm of the policy update
+
+falls below a tolerance,
+
+kθ k+1 − θ k k∞ < econverge
+
+where
+
+kxk∞ ≡ max | x jkl |.
+
+j,k,l
+
+We report our choice of convergence tolerance econverge for each application in Appendix A.
+
+Algorithm 1 summarizes the implementation.
+
+Algorithm 1: Structural Policy Gradient Algorithm
+
+Input : Initial policy parameters θ 0 ; step size sequence \{ηk \}; number of simulated
+
+trajectories N; horizon T.
+
+Output: Approximate optimal policy parameters θ ∗ .
+
+1. Initialize parameters θ 0 .
+
+2. For each iteration k = 0, 1, 2, . . . :
+
+(a) Simulate N trajectories
+
+\{(znt , pnt , gnt )\}tT=0 ,
+
+n = 1, . . . , N,
+
+using policy π (·; θ k ) and market clearing conditions.
+
+(b) Compute the sample objective
+
+L(θ k ) = dT0 vbπ
+
+1 N
+
+where v
+
+bπ =
+
+N n∑
+
+=1
+
+"
+
+T
+
+\#
+
+∑ βt Aπ,0→t u(c(znt , pnt )) .
+
+t =0
+
+(c) Update parameters by stochastic gradient ascent (or variants):
+
+θ k+1 = θ k + ηk ∇θ L(θ k ).
+
+(d) Stop when convergence criteria are met.
+
