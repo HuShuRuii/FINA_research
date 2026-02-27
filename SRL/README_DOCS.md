@@ -7,8 +7,8 @@
 | File | Role |
 |------|------|
 | **SRL.tex** | Main LaTeX source. Single source of truth for the paper. Reorganize and fix formulas here; all other exports derive from it. |
-| **hugget.ipynb** | Huggett model with aggregate risk — implementation and experiments. |
-| **krusell_smith.ipynb** | Krusell–Smith (1998) model — implementation and experiments. |
+| **hugget.ipynb** | Huggett model with aggregate risk — implementation and experiments (policy raw (c,b′), direct G update, two-phase training). |
+| **krusell_smith.ipynb** | Krusell–Smith (1998) model — implementation and experiments (same conventions as Huggett: raw policy, direct d update, two-phase). |
 | **one_account_hank.ipynb** | One-account HANK model — implementation and experiments. |
 | **txt_to_latex.py** | Utility script used in PDF→text→LaTeX pipeline (if applicable). |
 | **SRL_MODELS_METHODS.md** | Documentation of the **calculation methods** for the three models (Huggett, Krusell–Smith, HANK). |
@@ -25,3 +25,4 @@
 
 - **From PDF to LaTeX**: Extract text → convert to `.tex` (e.g. with `txt_to_latex.py` or external tools) → **reorganize and fix** `SRL.tex` (sections, equations, references).
 - **Ongoing**: Always maintain logic and consistency in **SRL.tex**; regenerate or update other formats from it as needed.
+- **Implementation details**: For Huggett and Krusell–Smith notebooks (policy output, distribution update without building A, two-phase training, warm-up), see the main repo **README.md** Appendix (SRL).

@@ -28,7 +28,10 @@
 
 ### 1.4 Implementation notes (notebook)
 
-- **hugget.ipynb:** Calibration (e.g. Table 2 in SRL); grids for $b$, $y$, $z$, $r$; Tauchen for $y$ and $z$; truncation horizon $T$ for finite-horizon value approximation; $c_{\min}$ floor for utility.
+- **hugget.ipynb:** Calibration (e.g. Table 2 in SRL); grids for $b$, $y$, $z$, $r$; Tauchen for $y$ (level AR(1), $E[y]=1$) and $z$ (log AR(1)); truncation horizon $T$ and $c_{\min}$ floor.
+- **Policy:** Returns **raw** $(c, b')$ (continuous); no lottery inside the policy. Young or soft weights are applied only when updating the distribution (e.g. `update_G_direct`, `update_G_pi_direct`). Helper `b_next_to_grid_lottery` is used only when discrete $b'$ is needed (e.g. agent-level simulation).
+- **Distribution update:** $G_{t+1}$ is computed from $G_t$ and the policy **without** building the full transition matrix $A_\pi$: `update_G_direct` (NumPy, Young weights) and `update_G_pi_direct` (PyTorch, soft weights).
+- **Two-phase training:** Warm-up with fixed $G_0$ (steady-state under initial $\theta$ at mid $(z,r)$); after $N_{\text{warm-up}}$, $G$ evolves each period. See main repo README Appendix (SRL) for details.
 
 ---
 
@@ -55,7 +58,10 @@
 
 ### 2.4 Implementation notes (notebook)
 
-- **krusell_smith.ipynb:** Calibration (SRL Section 4.2, Appendix A.2, Tables 4–5); grids for $k$, $y$, $z$, $r$, $w$; Tauchen for $y$ and $z$; same truncation and utility floor as elsewhere.
+- **krusell_smith.ipynb:** Calibration (SRL Section 4.2, Appendix A.2, Tables 4–5); grids for $k$, $y$, $z$, $r$, $w$; Tauchen for $y$ (level AR(1), $E[y]=1$) and $z$ (log AR(1)); same truncation and $c_{\min}$ as elsewhere.
+- **Policy:** Returns **raw** $(c, n, b')$ (continuous); `policy_from_grid_ks` and `b_next_to_grid_lottery` follow the same design as Huggett (lottery only when mapping to grid or when discrete $b'$ is needed).
+- **Distribution update:** $d_{t+1}$ from $d_t$ via `update_d_direct` (NumPy, Young) and `update_d_pi_direct_ks` (PyTorch, soft weights) **without** building the full $A_\pi$. Aggregate capital $K = d \cdot b$; $(r, w) = \texttt{K_to_prices}(K, z)$.
+- **Two-phase training:** Warm-up with fixed $d_0$ (steady-state under initial $\theta$); then $d$ evolves. SPG hyperparameters in calibration cell; “Using Trained Policy” cell with try/except. See main repo README Appendix (SRL) for details.
 
 ---
 
