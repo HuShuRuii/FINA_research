@@ -1,0 +1,5 @@
+# For run_hugget_cluster.py on cluster
+numpy
+matplotlib
+scipy
+torch

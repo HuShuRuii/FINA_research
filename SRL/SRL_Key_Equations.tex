@@ -1,0 +1,235 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{geometry}
+\geometry{margin=1in}
+
+\title{Structural Reinforcement Learning for Heterogeneous Agent Macroeconomics (SRL) - Key Equations}
+\author{Yucheng Yang, Chiyuan Wang, Andreas Schaab, Benjamin Moll}
+\date{December 2025}
+
+\begin{document}
+
+\maketitle
+
+\section{Abstract}
+
+We present a new approach to formulating and solving heterogeneous agent models with aggregate risk. We replace the cross-sectional distribution with low-dimensional prices as state variables and let agents learn equilibrium price dynamics directly from simulated paths.
+
+\section{Setup: Huggett Model with Aggregate Risk}
+
+\subsection{Individual Problem}
+
+\textbf{Preferences:}
+\begin{equation}
+\max E_0 \sum_{t=0}^{\infty} \beta^t u(c_t)
+\end{equation}
+where $u(c) = \frac{c^{1-\sigma}}{1-\sigma}$.
+
+\textbf{Budget Constraint:}
+\begin{equation}
+c_{i,t} + b_{i,t+1} = (1 + r_t)b_{i,t} + y_{i,t} z_t
+\end{equation}
+
+\textbf{Borrowing Constraint:}
+\begin{equation}
+b_{i,t} \geq \underline{b}
+\end{equation}
+
+\textbf{Income Processes:}
+\begin{equation}
+y_{i,t+1} \sim T_y(\cdot|y_{i,t}), \quad z_{t+1} \sim T_z(\cdot|z_t)
+\end{equation}
+
+\textbf{Policy Functions:}
+\begin{equation}
+\pi_t(b, y, z) = \{c_t(b, y, z), b_{t+1}(b, y, z)\}
+\end{equation}
+
+\subsection{Equilibrium}
+
+\textbf{Market Clearing (Bond Market):}
+\begin{equation}
+\int b_{t+1}(b, y, z_t) \, dG_t(b, y) = 0, \quad \forall t \geq 0
+\end{equation}
+
+\textbf{Equilibrium Price Functional:}
+\begin{equation}
+p_t = P^*(G_t, z_t)
+\end{equation}
+
+\subsection{Compact Notation}
+
+\textbf{Individual State Vector:}
+\begin{equation}
+s = (b, y)
+\end{equation}
+
+\textbf{Transition:}
+\begin{equation}
+s_{i,t+1} \sim T_s(\cdot|s_{i,t}, c_{i,t}, z_t, p_t)
+\end{equation}
+
+\textbf{Price Function:}
+\begin{equation}
+p_t = P^*(G_t, z_t)
+\end{equation}
+
+\section{Discretized Representation}
+
+\textbf{Distribution Vector:}
+\begin{equation}
+\mathbf{g}_t = \begin{bmatrix} g_t(s_1) \\ g_t(s_2) \\ \vdots \\ g_t(s_J) \end{bmatrix}
+\end{equation}
+
+\textbf{Transition Matrix:}
+\begin{equation}
+A_{\pi}(z_t, p_t) \quad \text{with} \quad Pr(s_{i,t+1}=s_{j'}|s_{i,t}=s_j) = T_s(s_{j'}|s_j, \pi(s_j), z_t, p_t)
+\end{equation}
+
+\textbf{Chapman-Kolmogorov Equation:}
+\begin{equation}
+\mathbf{g}_{t+1} = A_{\pi}(z_t, p_t)^\top \mathbf{g}_t
+\end{equation}
+
+\section{The Master Equation (Key Difficulty)}
+
+\textbf{Bellman Equation with Distribution:}
+\begin{equation}
+V(s, g, z) = \max_c \left\{ u(c) + \beta E[V(s', g', z') | s, g, z] \right\}
+\end{equation}
+
+subject to:
+\begin{equation}
+s' \sim T_s(\cdot|s, c, z, p), \quad p = P^*(g, z), \quad g' = A_\pi^\top g
+\end{equation}
+
+This is called the \textbf{Master equation} - a Bellman equation on a state space that includes the cross-sectional distribution $g$.
+
+\section{SRL Method: Sidestepping the Master Equation}
+
+\subsection{Assumption 1: Information}
+
+At date $t$, an individual observes the entire history of aggregate prices $\{p_t, p_{t-1}, ...\}$, but not the cross-sectional distribution $g_t$.
+
+\subsection{Assumption 2: Restricted State Space}
+
+Agents' policy functions take the form:
+\begin{equation}
+\pi(s_t, z_t, p_t)
+\end{equation}
+so that policies do not depend on lagged prices.
+
+\subsection{Value Function}
+
+For a given policy $\pi$, the value function is:
+\begin{equation}
+v_\pi(s, z, p) = E \left[ \sum_{t=0}^{\infty} \beta^t u(c(s_{i,t}, z_t, p_t)) \Big| s_{i,0}=s, z_0=z, p_0=p \right]
+\end{equation}
+
+In vector form:
+\begin{equation}
+\mathbf{v}_\pi(z, p) = E \left[ \sum_{t=0}^{\infty} \beta^t A_{\pi,0\to t} \mathbf{u}(z_t, p_t) \Big| z_0=z, p_0=p \right]
+\end{equation}
+
+where $A_{\pi,0\to t}$ is the $t$-step transition matrix and $\mathbf{u}$ is the utility vector.
+
+\subsection{Policy Gradient}
+
+The policy gradient using Monte Carlo simulation:
+\begin{equation}
+\nabla_\theta v_{\pi_\theta}(z, p) \approx \frac{1}{N} \sum_{n=1}^{N} \sum_{t=0}^{T} \beta^t \nabla_\theta \log \pi_\theta(a_t | s_t) \cdot R_n
+\end{equation}
+
+where $R_n$ is the return from trajectory $n$.
+
+\section{Market Clearing and Price Determination}
+
+\subsection{Aggregate Saving Function}
+\begin{equation}
+S_t(p, z) = \int b_0(s, z, p) \, dG_t(s) = \mathbf{b}_0(z, p)^\top \mathbf{g}_t
+\end{equation}
+
+\subsection{Equilibrium Price}
+The equilibrium price $p_t$ satisfies:
+\begin{equation}
+S_t(p_t, z_t) = 0
+\end{equation}
+
+Given the saving schedule $S_t(\cdot, z_t)$, we find $p_t$ such that the market clears.
+
+\section{Tables}
+
+\subsection{Table 1: Runtimes}
+\begin{tabular}{|c|c|c|c|}
+\hline
+Model & Epochs & Runs & Runtime (sec) \\
+\hline
+Krusell-Smith & 55 & - & 55 \\
+\hline
+Huggett with agg. shocks & 480.6 & 10 & 75.29 \\
+\hline
+HANK with agg. shocks & 496.5 & 10 & 199.53 \\
+\hline
+Partial equilibrium (Huggett) & 289.3 & 10 & 39.49 \\
+\hline
+\end{tabular}
+
+\subsection{Table 2: Huggett Model Calibration}
+\begin{tabular}{|c|c|p{6cm}|}
+\hline
+Parameter & Value & Description \\
+\hline
+$\beta$ & 0.96 & Discount factor (annual) \\
+\hline
+$\sigma$ & 2.0 & Risk aversion coefficient \\
+\hline
+$\rho_y$ & 0.6 & Idiosyncratic income persistence \\
+\hline
+$\rho_z$ & 0.9 & Aggregate shock persistence \\
+\hline
+$\nu_y$ & 0.2 & Idiosyncratic shock volatility \\
+\hline
+$\nu_z$ & 0.02 & Aggregate shock volatility \\
+\hline
+$\underline{b}$ & -1 & Borrowing limit \\
+\hline
+$B$ & 0 & Aggregate bond supply \\
+\hline
+\end{tabular}
+
+\subsection{Table 3: Hyperparameters for Huggett Model}
+\begin{tabular}{|c|c|p{6cm}|}
+\hline
+Parameter & Value & Description \\
+\hline
+$N_{sample}$ & 512 & Number of Monte Carlo paths \\
+\hline
+$T_{horizon}$ & 50 & Simulation horizon \\
+\hline
+$N_{epoch}$ & 1000 & Total training epochs \\
+\hline
+$N_{warmup}$ & 50 & Warmup epochs (fixed distribution) \\
+\hline
+$lr_{ini}$ & 0.001 & Initial learning rate \\
+\hline
+$lr_{decay}$ & 0.5 & Learning rate decay factor \\
+\hline
+$e_{converge}$ & $3\times10^{-4}$ & Convergence tolerance \\
+\hline
+\end{tabular}
+
+\section{Summary of Key Equations}
+
+\begin{enumerate}
+    \item \textbf{Utility}: $v_\pi(s,z,p) = E[\sum_{t=0}^\infty \beta^t u(c_t)]$
+    \item \textbf{Budget}: $c + b' = (1+r)b + yz$
+    \item \textbf{Market Clearing}: $\int b'(s,z,p) dG(s) = 0$
+    \item \textbf{Distribution Evolution}: $g_{t+1} = A_\pi(z_t,p_t)^\top g_t$
+    \item \textbf{Price Function}: $p_t = P^*(g_t, z_t)$
+    \item \textbf{Master Equation}: $V(s,g,z) = \max_c \{u(c) + \beta E[V(s',g',z')|s,g,z]\}$
+    \item \textbf{Policy Gradient}: $\nabla_\theta v_{\pi_\theta} = E[\sum_t \beta^t \nabla_\theta \log \pi_\theta \cdot R_t]$
+\end{enumerate}
+
+\end{document}
