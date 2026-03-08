@@ -7,6 +7,8 @@ Dependencies: numpy, matplotlib, scipy, torch (install on cluster as needed).
 
 Usage:
   python run_hugget_cluster.py [--out_dir OUTPUT_DIR] [--seed SEED] [--epochs N] [--quick]
+  python run_hugget_cluster.py --device mps   # MacBook Pro: use Apple Silicon GPU (default on Mac)
+  python run_hugget_cluster.py --device cpu   # Force CPU if MPS has issues
 """
 import argparse
 import os
@@ -45,6 +47,7 @@ def parse_args():
     p.add_argument("--seed", type=int, default=42, help="Random seed")
     p.add_argument("--epochs", type=int, default=None, help="Max SPG epochs (default: from calibration)")
     p.add_argument("--quick", action="store_true", help="Short run: 20 epochs, small sample")
+    p.add_argument("--device", type=str, default=None, choices=("cpu", "cuda", "mps"), help="Force device (default: cuda if available, else mps on Mac, else cpu)")
     return p.parse_args()
 
 # ---------- Calibration (SRL Table 2 & 3) ----------
@@ -92,18 +95,30 @@ def tauchen_ar1(rho, sigma_innov, n_states, m=3, mean=0.0):
     P = P / P.sum(axis=1, keepdims=True)
     return x_grid, P
 
-# ---------- Policy from grid: b continuous (lottery); iy/iz/ir are integer indices ----------
-def policy_from_grid(b, iy, iz, ir, c_grid, b_grid, y_grid, z_grid, r_grid, c_min_val=1e-3):
-    """b: continuous (lottery on b_grid); iy, iz, ir: integer indices. Returns (c, b_next)."""
+# ---------- Policy from grid: b continuous (lottery); r can be index or value (linear interp if value) ----------
+def policy_from_grid(b, iy, iz, ir_or_r, c_grid, b_grid, y_grid, z_grid, r_grid, c_min_val=1e-3):
+    """b: continuous (lottery). ir_or_r: int = grid index; float = r value (linear interp in r for c). Returns (c, b_next)."""
     b = np.atleast_1d(np.asarray(b, dtype=float))
-    nb = len(b_grid)
+    nb, nr = len(b_grid), len(r_grid)
+    if isinstance(ir_or_r, (int, np.integer)):
+        ir_lo = int(np.clip(ir_or_r, 0, nr - 1))
+        ir_hi = ir_lo
+        w_r = 0.0
+        r_use = float(r_grid[ir_lo])
+    else:
+        r_val = float(ir_or_r)
+        r_use = r_val
+        ir_lo = int(np.clip(np.searchsorted(r_grid, r_val, side="right") - 1, 0, nr - 2))
+        ir_hi = ir_lo + 1
+        w_r = (r_val - r_grid[ir_lo]) / max(r_grid[ir_hi] - r_grid[ir_lo], 1e-20)
     b_c = np.clip(b, b_grid[0], b_grid[-1])
     j_hi = np.clip(np.searchsorted(b_grid, b_c), 1, nb - 1)
     j_lo = j_hi - 1
-    w = (b_c - b_grid[j_lo]) / np.maximum(b_grid[j_hi] - b_grid[j_lo], 1e-20)
-    c = (1 - w) * c_grid[j_lo, iy, iz, ir] + w * c_grid[j_hi, iy, iz, ir]
+    w_b = (b_c - b_grid[j_lo]) / np.maximum(b_grid[j_hi] - b_grid[j_lo], 1e-20)
+    c = (1 - w_r) * ((1 - w_b) * c_grid[j_lo, iy, iz, ir_lo] + w_b * c_grid[j_hi, iy, iz, ir_lo])
+    c += w_r * ((1 - w_b) * c_grid[j_lo, iy, iz, ir_hi] + w_b * c_grid[j_hi, iy, iz, ir_hi])
     c = np.maximum(c, c_min_val)
-    c_total = (1 + r_grid[ir]) * b + y_grid[iy] * z_grid[iz]
+    c_total = (1 + r_use) * b + y_grid[iy] * z_grid[iz]
     b_next = np.clip(c_total - c, b_grid[0], b_grid[-1])
     c = np.maximum(c_total - b_next, c_min_val)
     if c.size == 1:
@@ -148,8 +163,20 @@ def main():
     invariant_z = np.linalg.matrix_power(Tz.T, 200)[:, 0]
     z_grid = z_grid / (z_grid @ invariant_z)
 
-    # Device & SPG grids
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # Device: prefer CUDA, then MPS (MacBook Pro Apple Silicon), then CPU
+    if args.device is not None:
+        device = torch.device(args.device)
+        device_name = str(device)
+    elif torch.cuda.is_available():
+        device = torch.device("cuda")
+        device_name = "cuda"
+    elif getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available() and getattr(torch.backends.mps, "is_built", lambda: True)():
+        device = torch.device("mps")
+        device_name = "mps (Apple Silicon)"
+    else:
+        device = torch.device("cpu")
+        device_name = "cpu"
+    log(f"Device: {device_name}")
     dtype = torch.float32
     nb_spg, nr_spg, nz_spg = 50, 10, 10
     b_grid_spg = torch.tensor(np.linspace(b_min, b_max, nb_spg), dtype=dtype, device=device)
@@ -164,62 +191,30 @@ def main():
     Tz_t = torch.tensor(Tz_sub, dtype=dtype, device=device)
     nz_spg = Tz_t.shape[0]
     nr_spg = len(r_grid_t)
+    # M3 UMA: .cpu() copies are free (shared DRAM), but every .item() flushes the Metal queue.
+    # Precompute all constants once so the hot path is free of device syncs.
+    r_grid_np      = r_grid_t.cpu().numpy()
+    eye_nb         = torch.eye(nb_spg, device=device, dtype=dtype)
+    b_flat_precomp = b_grid_spg.repeat_interleave(ny)   # (J,)  J = nb*ny
+    y_flat_precomp = y_grid_t.repeat(nb_spg)             # (J,)
+    Tz_np          = Tz_t.cpu().numpy()
+    Tz_cdf_np      = Tz_np.cumsum(axis=1)                # (nz,nz) for vectorised CPU z-sampling
 
     def theta_to_consumption_grid(theta, *_, c_min_val=1e-3):
         return torch.clamp(theta, min=c_min_val)
 
     def init_theta(b_grid_t, y_grid_t, z_grid_t, r_grid_t, save_frac=0.2, c_min_val=1e-3):
         nb_t, ny_t = len(b_grid_t), len(y_grid_t)
-        J, nz_t, nr_t = nb_t * ny_t, len(z_grid_t), len(r_grid_t)
+        nz_t, nr_t = len(z_grid_t), len(r_grid_t)
         b_flat = b_grid_t.repeat_interleave(ny_t)
         y_flat = y_grid_t.repeat(nb_t)
-        cash = b_flat.view(J, 1, 1) * (1 + r_grid_t).view(1, 1, nr_t) + y_flat.view(J, 1, 1) * z_grid_t.view(1, nz_t, 1)
-        c_grid = torch.clamp((1 - save_frac) * cash, min=c_min_val)
-        return c_grid.view(nb_t, ny_t, nz_t, nr_t)
+        cash = (b_flat.view(1, 1, -1) * (1 + r_grid_t).view(1, nr_t, 1)
+                + y_flat.view(1, 1, -1) * z_grid_t.view(nz_t, 1, 1))
+        cash = cash.view(nz_t, nr_t, nb_t, ny_t)
+        return torch.clamp((1 - save_frac) * cash, min=c_min_val)
 
     def _G_to_mat_spg(G, nb_spg, ny):
         return G.view(nb_spg, ny) if G.dim() == 1 else G
-
-    def update_G_pi_direct(theta, G, iz, ir, b_grid_t, y_grid_t, z_grid_t, r_grid_t, Ty_t, nb_spg, ny):
-        G = _G_to_mat_spg(G, nb_spg, ny)
-        c = theta_to_consumption_grid(theta, b_grid_t, y_grid_t, z_grid_t, r_grid_t)
-        c_val = c[:, :, iz, ir].ravel()
-        b_next = (1 + r_grid_t[ir]) * b_grid_t.repeat_interleave(ny) + y_grid_t.repeat(nb_spg) * z_grid_t[iz] - c_val
-        b_next = torch.clamp(b_next, b_grid_t[0], b_grid_t[-1])
-        idx_hi = torch.searchsorted(b_grid_t, b_next).clamp(1, nb_spg - 1)
-        idx_lo = idx_hi - 1
-        w_hi = (b_next - b_grid_t[idx_lo]) / (b_grid_t[idx_hi] - b_grid_t[idx_lo]).clamp(min=1e-20)
-        w_lo = 1.0 - w_hi
-        eye = torch.eye(nb_spg, device=b_grid_t.device, dtype=b_grid_t.dtype)
-        w_b = w_lo.unsqueeze(1) * eye[idx_lo] + w_hi.unsqueeze(1) * eye[idx_hi]
-        M = w_b.view(nb_spg, ny, nb_spg).permute(2, 0, 1)
-        Q = (M * G.unsqueeze(0)).sum(dim=1)
-        G_new = Q @ Ty_t
-        G_new = G_new / (G_new.sum() + 1e-20)
-        return G_new
-
-    def P_star_detach(theta, G, iz, b_grid_t, y_grid_t, z_grid_t, r_grid_t, ny, B=0.0):
-        nr = len(r_grid_t)
-        if nr == 1:
-            return r_grid_t[0].detach()
-        nb_b = len(b_grid_t)
-        G_mat = _G_to_mat_spg(G, nb_b, ny)
-        z_val = z_grid_t[iz]
-        c_all = theta_to_consumption_grid(theta, b_grid_t, y_grid_t, z_grid_t, r_grid_t)[:, :, iz, :].reshape(nb_b * ny, nr)
-        b_flat = b_grid_t.repeat_interleave(ny)
-        y_flat = y_grid_t.repeat(nb_b)
-        resources = b_flat.unsqueeze(1) * (1 + r_grid_t).unsqueeze(0) + (y_flat * z_val).unsqueeze(1)
-        b_next_all = (resources - c_all).clamp(b_min, b_max)
-        b_next_all = b_next_all.view(nb_b, ny, nr)
-        S_all = (G_mat.unsqueeze(2) * b_next_all).sum(dim=(0, 1))
-        best_ir = (S_all - B).abs().argmin().item()
-        return r_grid_t[best_ir].detach()
-
-    def r_to_ir(r_val, r_grid_t):
-        r = r_val.item() if torch.is_tensor(r_val) else float(r_val)
-        grid = r_grid_t.cpu().numpy()
-        idx = np.searchsorted(grid, r, side='right') - 1
-        return int(np.clip(idx, 0, len(grid) - 1))
 
     def u_torch(c_vec, sig=sigma):
         c_vec = torch.clamp(c_vec, min=c_min)
@@ -227,49 +222,173 @@ def main():
             return torch.log(c_vec)
         return (c_vec ** (1 - sig)) / (1 - sig)
 
-    def steady_state_G0(theta, b_grid_t, y_grid_t, z_grid_t, r_grid_t, Ty_t, nb_spg, ny, nz_spg, nr_spg, n_iter=150, tol=1e-6):
+    iy_flat_precomp = torch.arange(ny, device=device, dtype=torch.long).repeat(nb_spg)  # (J,)
+
+    # ── P_star: all on device, returns bracket for reuse ─────────────────────
+    def P_star_bracket(c_iz_flat, G_mat, z_val, b_flat, y_flat, b_grid_t, r_grid_t, B=0.0):
+        """Returns (r_star, ir_lo, ir_hi, w_r) -- no .item()."""
+        nr         = len(r_grid_t)
+        G_flat     = G_mat.reshape(-1)                                    # (J,)
+        resources  = b_flat.unsqueeze(1) * (1 + r_grid_t) + (y_flat * z_val).unsqueeze(1)  # (J, nr)
+        b_next_all = (resources - c_iz_flat).clamp(b_min, b_max)         # (J, nr)
+        S_all      = G_flat @ b_next_all                                  # (nr,) -- one matmul
+        ge         = (S_all >= B).to(r_grid_t.dtype)
+        ir_hi      = (ge.cumsum(0) >= 1).to(r_grid_t.dtype).argmax(0).clamp(1, nr - 1)
+        ir_lo      = (ir_hi - 1).clamp(0, nr - 2)
+        S_lo, S_hi = S_all[ir_lo], S_all[ir_hi]
+        w_r        = ((B - S_lo) / (S_hi - S_lo).clamp(1e-20)).clamp(0.0, 1.0)
+        r_star     = (r_grid_t[ir_lo] + w_r * (r_grid_t[ir_hi] - r_grid_t[ir_lo])).detach()
+        return r_star, ir_lo, ir_hi, w_r
+
+    def P_star_detach(theta, G, iz, b_grid_t, y_grid_t, z_grid_t, r_grid_t, ny, B=0.0):
+        if len(r_grid_t) == 1:
+            return r_grid_t[0].detach()
+        G_mat     = _G_to_mat_spg(G, len(b_grid_t), ny)
+        c         = theta_to_consumption_grid(theta)
+        c_iz_flat = c[iz].permute(1, 2, 0).reshape(len(b_grid_t) * ny, len(r_grid_t))
+        r_star, *_ = P_star_bracket(c_iz_flat, G_mat, z_grid_t[iz],
+                                     b_flat_precomp, y_flat_precomp, b_grid_t, r_grid_t, B)
+        return r_star
+
+    # ── G update: scatter_add replaces dense (J x nb) eye_nb lottery matrix ───
+    # Old: eye_nb[idx] builds (150, 50) matrices x 2  => 60 KB/call
+    # New: scatter_add on (J,) vectors                =>  2 KB/call
+    def _update_G_from_ct(c_t_flat, r_star, z_val, G_mat, b_grid_t, Ty_t, nb_spg, ny):
+        b_next     = ((1 + r_star) * b_flat_precomp
+                      + y_flat_precomp * z_val
+                      - c_t_flat).clamp(b_grid_t[0], b_grid_t[-1])
+        idx_hi     = torch.searchsorted(b_grid_t, b_next).clamp(1, nb_spg - 1)
+        idx_lo     = idx_hi - 1
+        w_hi       = (b_next - b_grid_t[idx_lo]) / (b_grid_t[idx_hi] - b_grid_t[idx_lo]).clamp(1e-20)
+        G_flat     = G_mat.reshape(-1)
+        G_new_flat = torch.zeros_like(G_flat)
+        dest_lo    = idx_lo * ny + iy_flat_precomp     # (J,)
+        dest_hi    = idx_hi * ny + iy_flat_precomp
+        G_new_flat.scatter_add_(0, dest_lo, (1.0 - w_hi) * G_flat)
+        G_new_flat.scatter_add_(0, dest_hi, w_hi * G_flat)
+        G_new = G_new_flat.view(nb_spg, ny) @ Ty_t
+        return G_new / (G_new.sum() + 1e-20)
+
+    # Legacy wrappers kept for any external callers
+    def consumption_at_r_continuous(theta, iz, r_val, b_grid_t, y_grid_t, z_grid_t, r_grid_t, c_min_val=1e-3, r_grid_np=None):
+        c    = theta_to_consumption_grid(theta)
+        _nr  = len(r_grid_t)
+        ge_s = (r_grid_t <= r_val).to(r_grid_t.dtype)
+        irl  = (ge_s.sum() - 1).clamp(0, _nr - 2).long()
+        irh  = (irl + 1).clamp(0, _nr - 1)
+        wr   = ((r_val - r_grid_t[irl]) / (r_grid_t[irh] - r_grid_t[irl]).clamp(1e-20)).clamp(0, 1)
+        return (1 - wr) * c[iz, irl] + wr * c[iz, irh]
+
+    def update_G_pi_direct(theta, G, iz, ir, b_grid_t, y_grid_t, z_grid_t, r_grid_t, Ty_t, nb_spg, ny, r_val=None, eye_nb=None):
+        G_mat = _G_to_mat_spg(G, nb_spg, ny)
+        if r_val is not None:
+            c_t   = consumption_at_r_continuous(theta, iz, r_val, b_grid_t, y_grid_t, z_grid_t, r_grid_t, c_min)
+            r_use = r_val
+        else:
+            c_t   = theta_to_consumption_grid(theta)[iz, ir]
+            r_use = r_grid_t[ir]
+        return _update_G_from_ct(c_t.reshape(-1), r_use, z_grid_t[iz], G_mat, b_grid_t, Ty_t, nb_spg, ny)
+
+    # ── Steady state — fixed iterations; removes 150 .abs().max().item() syncs ─
+    def steady_state_G0(theta, b_grid_t, y_grid_t, z_grid_t, r_grid_t, Ty_t, nb_spg, ny, nz_spg, nr_spg, n_iter=200, tol=1e-6):
         iz_mid = nz_spg // 2
-        ir_mid = nr_spg // 2 if nr_spg > 0 else 0
+        ir_m   = nr_spg // 2
         with torch.no_grad():
-            G = torch.ones(nb_spg, ny, device=device, dtype=dtype) / (nb_spg * ny)
+            G     = torch.ones(nb_spg, ny, device=device, dtype=dtype) / (nb_spg * ny)
+            c     = theta_to_consumption_grid(theta)
+            c_t   = c[iz_mid, ir_m]                  # (nb, ny) — fixed policy slice
+            r_use = r_grid_t[ir_m]
+            z_val = z_grid_t[iz_mid]
             for _ in range(n_iter):
-                G_new = update_G_pi_direct(theta, G, iz_mid, ir_mid, b_grid_t, y_grid_t, z_grid_t, r_grid_t, Ty_t, nb_spg, ny)
-                if (G_new - G).abs().max() < tol:
-                    return G_new
-                G = G_new
+                G = _update_G_from_ct(c_t.reshape(-1), r_use, z_val, G, b_grid_t, Ty_t, nb_spg, ny)
         return G
 
+    # ── Vectorised z-path sampler — pure numpy, zero MPS touch ───────────────
+    def _presample_iz_paths(N_traj, T_eff):
+        """Pre-sample all z Markov paths on CPU.  Eliminates N_traj×T_eff multinomial.item() Metal flushes."""
+        paths       = np.empty((N_traj, T_eff + 1), dtype=np.int32)
+        paths[:, 0] = np.random.randint(0, nz_spg, size=N_traj)
+        for t in range(T_eff):
+            rows        = paths[:, t]
+            u           = np.random.rand(N_traj, 1)
+            paths[:, t + 1] = (Tz_cdf_np[rows] < u).sum(axis=1).clip(0, nz_spg - 1)
+        return paths
+
+    # ── One-period step: accepts pre-computed c -- 0 theta_to_c calls inside ──
+    def _one_period_step(c, G_mat, iz, beta_pow, b_grid_t, Ty_t, nb_spg, ny):
+        """c: pre-computed consumption grid (nz, nr, nb, ny).  No recomputation."""
+        c_iz      = c[iz]                                              # (nr, nb, ny) -- ONE slice
+        c_iz_flat = c_iz.permute(1, 2, 0).reshape(nb_spg * ny, nr_spg)
+        z_val     = z_grid_t[iz]
+        r_star, ir_lo, ir_hi, w_r = P_star_bracket(
+            c_iz_flat, G_mat, z_val, b_flat_precomp, y_flat_precomp, b_grid_t, r_grid_t)
+        c_t    = (1 - w_r) * c_iz[ir_lo] + w_r * c_iz[ir_hi]         # (nb, ny)
+        L_term = beta_pow * (G_mat.detach() * u_torch(c_t)).sum()
+        G_new  = _update_G_from_ct(c_t.reshape(-1), r_star, z_val, G_mat, b_grid_t, Ty_t, nb_spg, ny)
+        return L_term, G_new.detach()
+
+    # ── SPG objective -- three algorithmic wins ───────────────────────────────
+    #   1. c = clamp(theta) computed ONCE per gradient step (not N_traj x T times)
+    #   2. G update: scatter_add O(J)  vs  dense lottery matrix O(J x nb)
+    #   3. warm_up: G fixed => P_star computed nz_spg times, not N_traj x T times
     def spg_objective(theta, N_traj, T_horizon, b_grid_t, y_grid_t, z_grid_t, r_grid_t, Ty_t, Tz_t,
                      nb_spg, ny, nz_spg, nr_spg, beta_t, G0=None, warm_up=False):
+        e_trunc = cal.get("e_trunc", 1e-3)
         if G0 is None:
-            G0 = torch.ones(nb_spg, ny, device=device, dtype=dtype) / (nb_spg * ny)
+            G0 = (torch.ones(nb_spg, ny, device=device, dtype=dtype) / (nb_spg * ny)
+                  + 0.3 * torch.rand(nb_spg, ny, device=device, dtype=dtype))
+            G0 = G0 / G0.sum()
         else:
             G0 = _G_to_mat_spg(G0, nb_spg, ny)
-        L_list = []
-        e_trunc = cal.get("e_trunc", 1e-3)
+
+        T_eff = T_horizon
+        for t in range(T_horizon):
+            if (beta_t ** t) < e_trunc:
+                T_eff = t
+                break
+
+        iz_paths  = _presample_iz_paths(N_traj, T_eff)
+        beta_pows = [beta_t ** t for t in range(T_eff)]
+
+        # Win 1: compute c ONCE -- theta doesn't change within a gradient step
+        c = theta_to_consumption_grid(theta)
+        J_loc = nb_spg * ny
+
+        if warm_up:
+            # Win 3: G fixed = G0 => (r_star, c_t) unique per iz.
+            # Reduces P_star calls: N_traj x T_eff => nz_spg  (e.g. 25600 => 10)
+            util_by_iz = []
+            for iz_val in range(nz_spg):
+                c_iz      = c[iz_val]
+                c_iz_flat = c_iz.permute(1, 2, 0).reshape(J_loc, nr_spg)
+                _, ir_lo, ir_hi, w_r = P_star_bracket(
+                    c_iz_flat, G0, z_grid_t[iz_val], b_flat_precomp, y_flat_precomp, b_grid_t, r_grid_t)
+                c_t = (1 - w_r) * c_iz[ir_lo] + w_r * c_iz[ir_hi]
+                util_by_iz.append((G0.detach() * u_torch(c_t)).sum())
+
+            L = torch.tensor(0.0, device=device, dtype=dtype)
+            for t in range(T_eff):
+                bp = beta_pows[t]
+                for iz_val in range(nz_spg):
+                    freq = float((iz_paths[:, t] == iz_val).sum()) / N_traj
+                    if freq > 0.0:
+                        L = L + bp * freq * util_by_iz[iz_val]
+            return L
+
+        # G evolves: trajectories independent; c shared, G per-trajectory
+        L_total = torch.tensor(0.0, device=device, dtype=dtype)
         for n in range(N_traj):
-            iz = np.random.randint(0, nz_spg)
             G = G0.clone()
-            L_n = torch.tensor(0.0, device=device, dtype=dtype)
-            for t in range(T_horizon):
-                if (beta_t ** t) < e_trunc:
-                    break
-                r_t = P_star_detach(theta, G, iz, b_grid_t, y_grid_t, z_grid_t, r_grid_t, ny)
-                ir = r_to_ir(r_t, r_grid_t)
-                c = theta_to_consumption_grid(theta, b_grid_t, y_grid_t, z_grid_t, r_grid_t)
-                c_t = c[:, :, iz, ir]
-                L_n = L_n + (beta_t ** t) * (G * u_torch(c_t)).sum()
-                if not warm_up:
-                    G = update_G_pi_direct(theta, G, iz, ir, b_grid_t, y_grid_t, z_grid_t, r_grid_t, Ty_t, nb_spg, ny).detach()
-                iz = torch.multinomial(Tz_t[iz, :], 1).squeeze().item()
-            L_list.append(L_n)
-        return torch.stack(L_list).mean()
+            for t in range(T_eff):
+                L_term, G = _one_period_step(c, G, int(iz_paths[n, t]), beta_pows[t],
+                                              b_grid_spg, Ty_t, nb_spg, ny)
+                L_total = L_total + L_term
+        return L_total / N_traj
 
     def save_visualizations(out_dir, theta_cur, loss_cur, suffix=""):
         """Save loss curve + consumption policy + c vs r to out_dir. suffix e.g. '_ep050' for checkpoints."""
-        c_grid_np = theta_to_consumption_grid(theta_cur.detach(), c_min_val=c_min).cpu().numpy()
-        if c_grid_np.ndim == 3:
-            c_grid_np = c_grid_np.reshape(nb_spg, ny, nz_spg, nr_spg)
+        c_grid = theta_to_consumption_grid(theta_cur.detach(), c_min_val=c_min)  # (nz, nr, nb, ny)
+        c_grid_np = c_grid.permute(2, 3, 0, 1).cpu().numpy()   # (nb, ny, nz, nr) for policy_from_grid
         b_grid_np = b_grid_spg.cpu().numpy()
         y_grid_np = y_grid_t.cpu().numpy()
         z_grid_np = z_grid_t.cpu().numpy()
@@ -328,7 +447,6 @@ def main():
 
     # ---------- Train SPG ----------
     log(f"Initializing SPG training...")
-    log(f"Device: {device}")
     log(f"Grid sizes: b={nb_spg}, y={ny}, z={nz_spg}, r={nr_spg}")
     log(f"Exporting visualizations every 50 epochs to {args.out_dir}/")
 

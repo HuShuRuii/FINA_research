@@ -32,6 +32,7 @@
 - **Policy:** Returns **raw** $(c, b')$ (continuous); no lottery inside the policy. Young or soft weights are applied only when updating the distribution (e.g. `update_G_direct`, `update_G_pi_direct`). Helper `b_next_to_grid_lottery` is used only when discrete $b'$ is needed (e.g. agent-level simulation).
 - **Distribution update:** $G_{t+1}$ is computed from $G_t$ and the policy **without** building the full transition matrix $A_\pi$: `update_G_direct` (NumPy, Young weights) and `update_G_pi_direct` (PyTorch, soft weights).
 - **Two-phase training:** Warm-up with fixed $G_0$ (steady-state under initial $\theta$ at mid $(z,r)$); after $N_{\text{warm-up}}$, $G$ evolves each period. See main repo README Appendix (SRL) for details.
+- **JAX version:** `hugget_jax.py` reimplements the same Huggett SRL/SPG in JAX (JIT + vmap/scan) for potential speedup on CPU/GPU/TPU. Same calibration and logic; dependencies: `numpy`, `scipy`, `jax`, `jaxlib`. Run: `python hugget_jax.py [--epochs N] [--quick]` or `python hugget_jax.py --benchmark` for timing.
 
 ---
 
