@@ -58,15 +58,15 @@ def get_calibration(quick: bool = False) -> dict:
     rho_y, nu_y = 0.6, 0.2
     rho_z, nu_z = 0.9, 0.02
     B, b_min = 0.0, -1.0
-    nb, b_max = 40, 50.0
+    nb, b_max = 200, 50.0
     ny, nr, nz = 3, 20, 30
     r_min, r_max = 0.01, 0.06
     c_min = 1e-3
     e_trunc = 1e-3
     if quick:
-        N_epoch_outer, N_p, T_traj, N_z_test = 10, 3, 20, 2
+        N_epoch_outer, N_p, T_traj, N_z_test, N_sample = 10, 3, 20, 2, 4
     else:
-        N_epoch_outer, N_p, T_traj, N_z_test = 100, 10, 50, 4
+        N_epoch_outer, N_p, T_traj, N_z_test, N_sample = 120, 10, 170, 4, 20
     lr_ini = 1e-3
     return {
         "beta": beta, "sigma": sigma, "rho_y": rho_y, "nu_y": nu_y,
@@ -74,7 +74,7 @@ def get_calibration(quick: bool = False) -> dict:
         "nb": nb, "b_max": b_max, "ny": ny, "nr": nr, "nz": nz,
         "r_min": r_min, "r_max": r_max, "c_min": c_min, "e_trunc": e_trunc,
         "N_epoch_outer": N_epoch_outer, "N_p": N_p, "T_traj": T_traj,
-        "N_z_test": N_z_test, "lr_ini": lr_ini,
+        "N_z_test": N_z_test, "N_sample": N_sample, "lr_ini": lr_ini,
     }
 
 
@@ -101,7 +101,7 @@ def tauchen_ar1(rho: float, sigma_innov: float, n_states: int, m: float = 3.0, m
 
 # ---------- JAX helpers ----------
 def theta_to_c(theta: jnp.ndarray, c_min_val: float) -> jnp.ndarray:
-    """θ → c = clamp(θ, c_min). Shape (nz, nr, nb, ny)."""
+    """θ -> c = clamp(θ, c_min). Shape (nz, nr_cur, nr_next, nb, ny)."""
     return jnp.maximum(theta, c_min_val)
 
 
@@ -124,29 +124,31 @@ def init_theta(b_grid, y_grid, z_grid, r_grid, save_frac=0.2, c_min_val=1e-3):
         + y_flat[None, None, :] * z_grid[:, None, None]
     )
     cash = cash.reshape(nz_t, nr_t, nb_t, ny_t)
-    return jnp.maximum((1 - save_frac) * cash, c_min_val)
+    c_base = jnp.maximum((1 - save_frac) * cash, c_min_val)  # (nz, nr_cur, nb, ny)
+    # Forward-looking policy: duplicate base across expected-next-price dimension.
+    return jnp.broadcast_to(c_base[:, :, None, :, :], (nz_t, nr_t, nr_t, nb_t, ny_t))
 
 
 def _G_to_mat(G, nb, ny):
     return jnp.reshape(G, (nb, ny))
 
 
-def P_star_best_ir(theta, G, iz, b_grid, y_grid, z_grid, r_grid, ny, B, b_min, b_max, c_min_val, ip_consume):
-    """Market-clearing: return best_ir. ip_consume: if >= 0, use that r-index for c; if < 0, use c[iz,:,:,:] (standard)."""
+def P_star_best_ir(theta, G, iz, b_grid, y_grid, z_grid, r_grid, ny, B, b_min, b_max, c_min_val, ip_next, use_same_r):
+    """Market-clearing current-r index.
+    If use_same_r: use c[iz, ir, ir, :, :].
+    Else: use c[iz, ir, ip_next, :, :].
+    """
     nr = r_grid.shape[0]
     nb_b = b_grid.shape[0]
     G_mat = _G_to_mat(G, nb_b, ny)
     z_val = z_grid[iz]
-    c = theta_to_c(theta, c_min_val)  # (nz, nr, nb, ny)
+    c = theta_to_c(theta, c_min_val)  # (nz, nr_cur, nr_next, nb, ny)
     b_flat = jnp.repeat(b_grid, ny)
     y_flat = jnp.tile(y_grid, nb_b)
     resources = b_flat[:, None] * (1 + r_grid[None, :]) + (y_flat * z_val)[:, None]  # (nb*ny, nr)
-
-    # ip_consume < 0: standard (c varies with r). ip_consume >= 0: use c at that index for all r.
-    c_standard = c[iz, :, :, :].transpose(1, 2, 0).reshape(nb_b * ny, nr)
-    ip_safe = jnp.maximum(0, ip_consume)  # avoid indexing with -1 when using c_standard
-    c_fixed = jnp.broadcast_to(c[iz, ip_safe, :, :].ravel()[:, None], (nb_b * ny, nr))
-    c_slice = jnp.where(ip_consume >= 0, c_fixed, c_standard)
+    ir_idx = jnp.arange(nr, dtype=jnp.int32)
+    ip_use = jnp.where(use_same_r, ir_idx, jnp.full((nr,), jnp.int32(ip_next)))
+    c_slice = c[iz, ir_idx, ip_use, :, :].transpose(1, 2, 0).reshape(nb_b * ny, nr)
 
     b_next_all = jnp.clip(resources - c_slice, b_min, b_max)
     b_next_all = b_next_all.reshape(nb_b, ny, nr)
@@ -155,11 +157,12 @@ def P_star_best_ir(theta, G, iz, b_grid, y_grid, z_grid, r_grid, ny, B, b_min, b
     return jnp.where(nr == 1, jnp.int32(0), best_ir)
 
 
-def update_G_pi_direct(theta, G, iz, ir, ip_for_c, b_grid, y_grid, z_grid, r_grid, Ty, nb, ny, b_min, b_max, c_min_val):
-    """G update. ip_for_c: r-index for consumption (from policy). ir: r-index for budget (market clearing)."""
+def update_G_pi_direct(theta, G, iz, ir, ip_next, use_same_r, b_grid, y_grid, z_grid, r_grid, Ty, nb, ny, b_min, b_max, c_min_val):
+    """G update with forward-looking policy slice."""
     G = _G_to_mat(G, nb, ny)
     c = theta_to_c(theta, c_min_val)
-    c_val = c[iz, ip_for_c, :, :].ravel()
+    ip_for_c = jnp.where(use_same_r, ir, ip_next)
+    c_val = c[iz, ir, ip_for_c, :, :].ravel()
     b_next = (1 + r_grid[ir]) * jnp.repeat(b_grid, ny) + jnp.tile(y_grid, nb) * z_grid[iz] - c_val
     b_next = jnp.clip(b_next, b_min, b_max)
     idx_hi = jnp.clip(jnp.searchsorted(b_grid, b_next, side="right"), 1, nb - 1)
@@ -211,24 +214,22 @@ def objective_one_trajectory(
         use_same_r = assume_pt1_equals_pt or is_last
         ip_next = p_trajectory[t + 1]
 
-        ip_consume_arg = jnp.where(use_same_r, jnp.int32(-1), ip_next)  # -1 means use market-clearing ir
-
         best_ir = P_star_best_ir(
             theta, G_cur, iz, b_grid, y_grid, z_grid, r_grid, ny,
-            B, b_min, b_max, c_min_val, ip_consume_arg,
+            B, b_min, b_max, c_min_val, ip_next, use_same_r,
         )
         best_ir = lax.stop_gradient(best_ir)
         r_t = r_grid[best_ir]
         ip_for_c = jnp.where(use_same_r, best_ir, ip_next)
 
         c = theta_to_c(theta, c_min_val)
-        c_t = c[iz, ip_for_c, :, :]
+        c_t = c[iz, best_ir, ip_for_c, :, :]
         weight = (beta ** t) * jnp.float32((beta ** t) >= e_trunc)
         term = weight * (lax.stop_gradient(G_cur) * u_jax(c_t, sigma, c_min_val)).sum()
         L_new = L_cur + term
 
         G_new = update_G_pi_direct(
-            theta, G_cur, iz, best_ir, ip_for_c,
+            theta, G_cur, iz, best_ir, ip_next, use_same_r,
             b_grid, y_grid, z_grid, r_grid, Ty, nb, ny,
             b_min, b_max, c_min_val,
         )
@@ -255,17 +256,51 @@ def generate_z_trajectory(T: int, nz_spg: int, Tz_np: np.ndarray) -> np.ndarray:
     return np.array(path, dtype=np.int32)
 
 
+def run_inner_convergence(theta_flat, z_traj, N_p, r_grid_np, G0_steady, b_grid, y_grid, z_grid, r_grid, Ty,
+                          nb_spg, ny, nz_spg, nr_spg, beta, e_trunc, B, b_min, b_max, c_min, sigma):
+    """Run p-trajectory fixed-point inner loop with fixed theta; return r paths and convergence distances."""
+    p_traj = [nr_spg // 2] * (len(z_traj) + 1)
+    r_paths = []
+    p_paths = []
+    for k in range(N_p):
+        assume_pt1 = (k == 0)
+        L_val, r_vals = objective_one_trajectory(
+            theta_flat.reshape(nz_spg, nr_spg, nr_spg, nb_spg, ny),
+            jnp.array(z_traj), jnp.array(p_traj, dtype=jnp.int32), G0_steady,
+            b_grid, y_grid, z_grid, r_grid, Ty, nb_spg, ny, nz_spg, nr_spg,
+            beta, e_trunc, B, b_min, b_max, c_min, sigma, assume_pt1,
+        )
+        _ = L_val
+        r_np = np.asarray(r_vals)
+        r_paths.append(r_np)
+        p_paths.append(np.asarray(p_traj[:-1], dtype=int))
+        p_traj = make_p_trajectory_indices(r_np, r_grid_np, len(z_traj))
+    r_paths = np.asarray(r_paths)  # (N_p, T)
+    p_paths = np.asarray(p_paths)  # (N_p, T)
+    if N_p >= 2:
+        delta = np.max(np.abs(r_paths[1:] - r_paths[:-1]), axis=1)  # (N_p-1,)
+    else:
+        delta = np.zeros((0,), dtype=float)
+    return r_paths, p_paths, delta
+
+
 def main():
     parser = argparse.ArgumentParser(description="Forward-Looking Huggett in JAX")
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--quick", action="store_true")
     parser.add_argument("--out_dir", type=str, default="forward_looking_hugget_output")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--n_sample", type=int, default=None, help="Number of z trajectories per epoch")
+    parser.add_argument("--n_p", type=int, default=None, help="Inner iterations per trajectory")
     args = parser.parse_args()
 
     cal = get_calibration(quick=args.quick)
     if args.epochs is not None:
         cal["N_epoch_outer"] = args.epochs
+    if args.n_sample is not None:
+        cal["N_sample"] = args.n_sample
+    if args.n_p is not None:
+        cal["N_p"] = args.n_p
 
     beta = cal["beta"]
     sigma = cal["sigma"]
@@ -279,6 +314,7 @@ def main():
     e_trunc = cal["e_trunc"]
     N_epoch_outer = cal["N_epoch_outer"]
     N_p = cal["N_p"]
+    N_sample = cal["N_sample"]
     T_traj = cal["T_traj"]
     N_z_test = cal["N_z_test"]
     lr_ini = cal["lr_ini"]
@@ -297,15 +333,12 @@ def main():
     invariant_z = np.linalg.matrix_power(Tz_np.T, 200)[:, 0]
     z_grid_np = z_grid_np / (z_grid_np @ invariant_z)
 
-    nb_spg, nr_spg, nz_spg = 50, 10, 10
-    iz_spg = np.linspace(0, nz - 1, nz_spg, dtype=int)
-    z_grid_spg_np = z_grid_np[iz_spg]
-    Tz_sub = Tz_np[np.ix_(iz_spg, iz_spg)]
-    Tz_sub = Tz_sub / Tz_sub.sum(axis=1, keepdims=True)
-
+    # Use full Huggett grids for forward-looking training.
+    nb_spg, nr_spg, nz_spg = nb, nr, nz
+    Tz_sub = Tz_np
     b_grid = jnp.array(np.linspace(b_min, b_max, nb_spg))
     r_grid = jnp.array(np.linspace(r_min, r_max, nr_spg))
-    z_grid = jnp.array(z_grid_spg_np)
+    z_grid = jnp.array(z_grid_np)
     y_grid = jnp.array(y_grid_np)
     Ty = jnp.array(Ty_np)
     r_grid_spg_np = np.array(r_grid)
@@ -315,7 +348,7 @@ def main():
     theta = theta.reshape(-1)  # flatten for Adam
 
     def loss_fn(theta_flat, z_traj, p_traj, assume_pt1):
-        theta_mat = theta_flat.reshape(nz_spg, nr_spg, nb_spg, ny)
+        theta_mat = theta_flat.reshape(nz_spg, nr_spg, nr_spg, nb_spg, ny)
         L, _ = objective_one_trajectory(
             theta_mat, z_traj, p_traj, G0_steady,
             b_grid, y_grid, z_grid, r_grid, Ty,
@@ -340,34 +373,38 @@ def main():
     loss_hist = []
     p_trajectories_by_epoch = []
 
-    print("Forward-Looking Huggett JAX: N_p=%d, N_epoch=%d, T_traj=%d" % (N_p, N_epoch_outer, T_traj))
+    print("Forward-Looking Huggett JAX: N_sample=%d, N_p=%d, N_epoch=%d, T_traj=%d" % (N_sample, N_p, N_epoch_outer, T_traj))
     print("JAX device:", jax.default_backend())
 
     start = time.perf_counter()
+    global_step = 0
     for epoch in range(N_epoch_outer):
-        z_trajectory = generate_z_trajectory(T_traj, nz_spg, Tz_sub)
-        p_trajectory = [nr_spg // 2] * (T_traj + 1)
         epoch_losses = []
         epoch_pt = []
-        for k in range(N_p):
-            assume_pt1 = (k == 0)
-            theta_mat = theta.reshape(nz_spg, nr_spg, nb_spg, ny)
-            L_val, r_vals = objective_one_trajectory(
-                theta_mat,
-                jnp.array(z_trajectory), jnp.array(p_trajectory, dtype=jnp.int32), G0_steady,
-                b_grid, y_grid, z_grid, r_grid, Ty,
-                nb_spg, ny, nz_spg, nr_spg,
-                beta, e_trunc, B, b_min, b_max, c_min, sigma,
-                assume_pt1,
-            )
-            g = grad_fn(theta, jnp.array(z_trajectory), jnp.array(p_trajectory, dtype=jnp.int32), assume_pt1)
-            theta, m, v = adam_step(theta, m, v, g, epoch * N_p + k, lr_ini)
-            epoch_losses.append(float(-L_val))
-            epoch_pt.append(list(p_trajectory))
-            r_realized_np = np.asarray(r_vals)
-            p_trajectory = make_p_trajectory_indices(r_realized_np, r_grid_spg_np, T_traj)
+        for n in range(N_sample):
+            # Same z path across inner loop for this sample.
+            z_trajectory = generate_z_trajectory(T_traj, nz_spg, Tz_sub)
+            p_trajectory = [nr_spg // 2] * (T_traj + 1)
+            for k in range(N_p):
+                assume_pt1 = (k == 0)
+                theta_mat = theta.reshape(nz_spg, nr_spg, nr_spg, nb_spg, ny)
+                L_val, r_vals = objective_one_trajectory(
+                    theta_mat,
+                    jnp.array(z_trajectory), jnp.array(p_trajectory, dtype=jnp.int32), G0_steady,
+                    b_grid, y_grid, z_grid, r_grid, Ty,
+                    nb_spg, ny, nz_spg, nr_spg,
+                    beta, e_trunc, B, b_min, b_max, c_min, sigma,
+                    assume_pt1,
+                )
+                g = grad_fn(theta, jnp.array(z_trajectory), jnp.array(p_trajectory, dtype=jnp.int32), assume_pt1)
+                theta, m, v = adam_step(theta, m, v, g, global_step, lr_ini)
+                global_step += 1
+                epoch_losses.append(float(-L_val))
+                epoch_pt.append(list(p_trajectory))
+                r_realized_np = np.asarray(r_vals)
+                p_trajectory = make_p_trajectory_indices(r_realized_np, r_grid_spg_np, T_traj)
         loss_hist.append(np.mean(epoch_losses))
-        p_trajectories_by_epoch.append(epoch_pt)
+        p_trajectories_by_epoch.append(epoch_pt[-N_p:] if len(epoch_pt) >= N_p else epoch_pt)
         if (epoch + 1) % 10 == 0 or epoch == 0:
             print("Epoch %d, mean L = %.4f" % (epoch + 1, loss_hist[-1]))
 
@@ -386,7 +423,7 @@ def main():
         for k in range(N_p):
             assume_pt1 = (k == 0)
             L_val, r_vals = objective_one_trajectory(
-                theta_test.reshape(nz_spg, nr_spg, nb_spg, ny),
+                theta_test.reshape(nz_spg, nr_spg, nr_spg, nb_spg, ny),
                 jnp.array(z_traj), jnp.array(p_traj, dtype=jnp.int32), G0_steady,
                 b_grid, y_grid, z_grid, r_grid, Ty,
                 nb_spg, ny, nz_spg, nr_spg,
@@ -400,6 +437,20 @@ def main():
             p_traj = make_p_trajectory_indices(np.asarray(r_vals), r_grid_spg_np, T_traj)
         test_results.append({"losses": losses_inner, "r_paths": r_paths_inner})
         print("Test trajectory %d: L first=%.4f, last=%.4f" % (traj_idx + 1, losses_inner[0], losses_inner[-1]))
+
+    # Convergence diagnostics with fixed theta (no gradient update in inner loop)
+    conv_results = []
+    for traj_idx, z_traj in enumerate(test_z_trajectories):
+        r_paths_conv, p_paths_conv, delta_conv = run_inner_convergence(
+            theta, z_traj, N_p, r_grid_spg_np, G0_steady, b_grid, y_grid, z_grid, r_grid, Ty,
+            nb_spg, ny, nz_spg, nr_spg, beta, e_trunc, B, b_min, b_max, c_min, sigma,
+        )
+        conv_results.append({
+            "z_traj": z_traj,
+            "r_paths": r_paths_conv,
+            "p_paths": p_paths_conv,
+            "delta": delta_conv,
+        })
 
     # Save outputs
     os.makedirs(args.out_dir, exist_ok=True)
@@ -444,6 +495,38 @@ def main():
     fig.savefig(os.path.join(args.out_dir, "forward_looking_results.png"), dpi=150, bbox_inches="tight")
     plt.close(fig)
 
+    # Plot all inner r trajectories for each fixed z path (convergence visibility)
+    for traj_idx, cres in enumerate(conv_results):
+        r_paths = cres["r_paths"]  # (N_p, T)
+        delta = cres["delta"]      # (N_p-1,)
+        t_axis = np.arange(r_paths.shape[1])
+
+        fig, axs = plt.subplots(2, 1, figsize=(10, 8))
+        for k in range(r_paths.shape[0]):
+            alpha = 0.25 + 0.75 * (k + 1) / max(r_paths.shape[0], 1)
+            axs[0].plot(t_axis, r_paths[k], alpha=alpha, linewidth=1.2, label="k=%d" % k)
+        axs[0].set_xlabel("t")
+        axs[0].set_ylabel("r_t")
+        axs[0].set_title("All inner realized r trajectories (fixed z path %d)" % (traj_idx + 1))
+        axs[0].grid(alpha=0.3)
+        axs[0].legend(ncol=4, fontsize=8)
+
+        if delta.size > 0:
+            axs[1].plot(np.arange(1, r_paths.shape[0]), delta, "-o")
+        axs[1].set_xlabel("inner iteration k")
+        axs[1].set_ylabel("max_t |r^(k)-r^(k-1)|")
+        axs[1].set_title("Inner-loop trajectory convergence distance")
+        axs[1].grid(alpha=0.3)
+
+        plt.tight_layout()
+        fig.savefig(os.path.join(args.out_dir, "trajectory_convergence_traj%02d.png" % (traj_idx + 1)),
+                    dpi=150, bbox_inches="tight")
+        plt.close(fig)
+
+        np.save(os.path.join(args.out_dir, "conv_r_paths_traj%02d.npy" % (traj_idx + 1)), r_paths)
+        np.save(os.path.join(args.out_dir, "conv_p_paths_traj%02d.npy" % (traj_idx + 1)), cres["p_paths"])
+        np.save(os.path.join(args.out_dir, "conv_delta_traj%02d.npy" % (traj_idx + 1)), delta)
+
     fig, ax = plt.subplots(1, 1, figsize=(7, 4))
     ax.plot(loss_hist, color="tab:blue")
     ax.set_xlabel("Epoch")
@@ -456,7 +539,7 @@ def main():
 
     with open(os.path.join(args.out_dir, "loss_hist.txt"), "w") as f:
         f.write("\n".join(map(str, loss_hist)))
-    np.save(os.path.join(args.out_dir, "theta_final.npy"), np.array(theta))
+    np.save(os.path.join(args.out_dir, "theta_final.npy"), np.array(theta.reshape(nz_spg, nr_spg, nr_spg, nb_spg, ny)))
     print("Saved %s" % args.out_dir)
 
 

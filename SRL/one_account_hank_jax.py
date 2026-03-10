@@ -5,11 +5,15 @@ One-account HANK (household block) — JAX implementation.
 Baseline port of SRL/one_account_hank.ipynb:
 - policy (c, n) on (b, y, r, w) grid (no z in policy)
 - objective E[sum beta^t u(c_t, n_t)]
-- taxes/dividends from simplified NK block identities
-- optional (slow) market-clearing grid search for (r,w)
+- per period solve: given (d_t, z_t, r_t), clear bond market for w_t;
+  then recover Y_t, Pi_t using:
+    Y_t = z_t * N_t
+    Y_t = C_t + 0.5 * Pi_t * Y_t^2
+- r_{t+1} follows Taylor rule from period-t outcomes.
 
 Usage:
-  python one_account_hank_jax.py [--epochs N] [--quick] [--out_dir DIR] [--use_market_clearing]
+  python one_account_hank_jax.py [--epochs N] [--quick] [--out_dir DIR]
+      [--rho_r 0.8 --r_ss 0.038 --phi_pi 1.5 --phi_y 0.1 --sigma_r 0.0]
 """
 from __future__ import annotations
 
@@ -58,6 +62,13 @@ def get_calibration(quick: bool = False) -> dict:
 
     epsilon = 6.0
     theta_rotemberg = 0.1
+    rho_r = 0.8
+    r_ss = 0.038
+    phi_pi = 1.5
+    phi_y = 0.1
+    sigma_r = 0.0
+    pi_target = 0.0
+    y_target = 1.0
 
     rho_y, nu_y = 0.6, 0.2
     rho_z, nu_z = 0.9, 0.02
@@ -78,6 +89,8 @@ def get_calibration(quick: bool = False) -> dict:
         "beta": beta, "sigma": sigma, "eta": eta,
         "B_supply": B_supply, "n_min": n_min,
         "epsilon": epsilon, "theta_rotemberg": theta_rotemberg,
+        "rho_r": rho_r, "r_ss": r_ss, "phi_pi": phi_pi, "phi_y": phi_y, "sigma_r": sigma_r,
+        "pi_target": pi_target, "y_target": y_target,
         "rho_y": rho_y, "nu_y": nu_y, "rho_z": rho_z, "nu_z": nu_z,
         "ny": ny, "nz": nz,
         "b_min": b_min, "b_max": b_max,
@@ -105,50 +118,71 @@ def u_jax(c: jnp.ndarray, n: jnp.ndarray, sigma: float, eta: float, c_min: float
     return uc + un
 
 
-def Y_from_C_Pi(C_agg: jnp.ndarray, Pi_t: jnp.ndarray, theta_rot: float):
-    denom = 1.0 - (theta_rot / 2.0) * (Pi_t ** 2)
-    return C_agg / jnp.maximum(denom, 1e-8)
+def policy_at_rw(
+    theta_c: jnp.ndarray,
+    theta_n: jnp.ndarray,
+    r_t: jnp.ndarray,
+    w_t: jnp.ndarray,
+    r_grid: jnp.ndarray,
+    w_grid: jnp.ndarray,
+    c_min: float,
+    n_min: float,
+):
+    """Bilinear interpolation of policy on (r,w) grid."""
+    c_pol, n_pol = theta_to_cn(theta_c, theta_n, c_min, n_min)  # (J,nr,nw)
+    nr = r_grid.shape[0]
+    nw = w_grid.shape[0]
+
+    ir_hi = jnp.clip(jnp.searchsorted(r_grid, r_t, side="right"), 1, nr - 1)
+    ir_lo = ir_hi - 1
+    wr = (r_t - r_grid[ir_lo]) / jnp.maximum(r_grid[ir_hi] - r_grid[ir_lo], 1e-20)
+
+    iw_hi = jnp.clip(jnp.searchsorted(w_grid, w_t, side="right"), 1, nw - 1)
+    iw_lo = iw_hi - 1
+    ww = (w_t - w_grid[iw_lo]) / jnp.maximum(w_grid[iw_hi] - w_grid[iw_lo], 1e-20)
+
+    c00 = c_pol[:, ir_lo, iw_lo]
+    c01 = c_pol[:, ir_lo, iw_hi]
+    c10 = c_pol[:, ir_hi, iw_lo]
+    c11 = c_pol[:, ir_hi, iw_hi]
+
+    n00 = n_pol[:, ir_lo, iw_lo]
+    n01 = n_pol[:, ir_lo, iw_hi]
+    n10 = n_pol[:, ir_hi, iw_lo]
+    n11 = n_pol[:, ir_hi, iw_hi]
+
+    c_t = (1 - wr) * ((1 - ww) * c00 + ww * c01) + wr * ((1 - ww) * c10 + ww * c11)
+    n_t = (1 - wr) * ((1 - ww) * n00 + ww * n01) + wr * ((1 - ww) * n10 + ww * n11)
+    return c_t, n_t
 
 
-def dividend_agg(Y_t: jnp.ndarray, w_t: jnp.ndarray, z_t: jnp.ndarray, Pi_t: jnp.ndarray, theta_rot: float):
-    return (1.0 - w_t / (z_t + 1e-20)) * Y_t - (theta_rot / 2.0) * (Pi_t ** 2) * Y_t
-
-
-def update_d_hank(
+def one_period_bnext_and_dist(
     d: jnp.ndarray,
     c_t: jnp.ndarray,
     n_t: jnp.ndarray,
-    iz: int,
-    ir: int,
-    iw: int,
+    z_t: jnp.ndarray,
+    r_t: jnp.ndarray,
+    w_t: jnp.ndarray,
+    pi_t: jnp.ndarray,
+    y_t: jnp.ndarray,
     b_grid: jnp.ndarray,
     y_grid: jnp.ndarray,
-    z_grid: jnp.ndarray,
-    r_grid: jnp.ndarray,
-    w_grid: jnp.ndarray,
     Ty: jnp.ndarray,
     nb: int,
     ny: int,
     B_supply: float,
     b_min: float,
     b_max: float,
-    theta_rot: float,
     sigma_b: float = 0.5,
-) -> jnp.ndarray:
-    r_t = r_grid[ir]
-    w_t = w_grid[iw]
-    z_t = z_grid[iz]
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Given (r_t, w_t, pi_t, y_t), update distribution and return b_next."""
     T_t = r_t * B_supply
-
-    Pi_t = jnp.float32(0.0)
-    C_agg = (d * c_t).sum()
-    Y_t = Y_from_C_Pi(C_agg, Pi_t, theta_rot)
-    d_t = dividend_agg(Y_t, w_t, z_t, Pi_t, theta_rot)
+    div_t = (1.0 - w_t / (z_t + 1e-20)) * y_t - 0.5 * pi_t * (y_t ** 2)
 
     b_vals = jnp.repeat(b_grid, ny)
     y_vals = jnp.tile(y_grid, nb)
 
-    b_next = (1 + r_t) * b_vals + w_t * y_vals * n_t + d_t - T_t - c_t
+    b_next = (1 + r_t) * b_vals + w_t * y_vals * n_t + div_t - T_t - c_t
     b_next = jnp.clip(b_next, b_min, b_max)
 
     dist = b_next[:, None] - b_grid[None, :]
@@ -159,48 +193,95 @@ def update_d_hank(
     d_mat = d.reshape(nb, ny)
     Q = (M * d_mat[None, :, :]).sum(axis=1)
     d_new = (Q @ Ty).reshape(nb * ny)
-    return d_new / (d_new.sum() + 1e-20)
+    d_new = d_new / (d_new.sum() + 1e-20)
+    return b_next, d_new
 
 
-def market_clearing_residual(
-    ir: int,
-    iw: int,
+def macro_block_from_w(
+    theta_c: jnp.ndarray,
+    theta_n: jnp.ndarray,
     d: jnp.ndarray,
-    iz: int,
-    c_pol: jnp.ndarray,
-    n_pol: jnp.ndarray,
+    z_t: jnp.ndarray,
+    r_t: jnp.ndarray,
+    w_t: jnp.ndarray,
     b_grid: jnp.ndarray,
     y_grid: jnp.ndarray,
-    z_grid: jnp.ndarray,
     r_grid: jnp.ndarray,
     w_grid: jnp.ndarray,
     Ty: jnp.ndarray,
     nb: int,
     ny: int,
+    c_min: float,
+    n_min: float,
     B_supply: float,
     b_min: float,
     b_max: float,
-    theta_rot: float,
 ):
-    c_t = c_pol[:, ir, iw]
-    n_t = n_pol[:, ir, iw]
-    d_next = update_d_hank(d, c_t, n_t, iz, ir, iw, b_grid, y_grid, z_grid, r_grid, w_grid,
-                           Ty, nb, ny, B_supply, b_min, b_max, theta_rot)
+    """Solve (Pi_t, Y_t) given w_t and return bond residual for clearing."""
+    c_t, n_t = policy_at_rw(theta_c, theta_n, r_t, w_t, r_grid, w_grid, c_min, n_min)
+    c_agg = (d * c_t).sum()
+    n_supply = (d * n_t).sum()
+    y_t = z_t * n_supply
+    pi_t = 2.0 * (y_t - c_agg) / jnp.maximum(y_t ** 2, 1e-8)  # user-specified goods equation
 
+    b_next, d_next = one_period_bnext_and_dist(
+        d, c_t, n_t, z_t, r_t, w_t, pi_t, y_t,
+        b_grid, y_grid, Ty, nb, ny, B_supply, b_min, b_max,
+    )
     b_vals = jnp.repeat(b_grid, ny)
-    B_next = (d_next * b_vals).sum()
+    b_next_agg = (d_next * b_vals).sum()
+    bond_res = b_next_agg - B_supply
+    return bond_res, c_t, n_t, pi_t, y_t, d_next, b_next
 
-    r_t = r_grid[ir]
-    w_t = w_grid[iw]
-    z_t = z_grid[iz]
-    Pi_t = jnp.float32(0.0)
-    C_agg = (d * c_t).sum()
-    Y_t = Y_from_C_Pi(C_agg, Pi_t, theta_rot)
 
-    N_supply = (d * n_t).sum()
-    N_demand = Y_t / (z_t + 1e-20)
+def solve_w_given_rt(
+    theta_c: jnp.ndarray,
+    theta_n: jnp.ndarray,
+    d: jnp.ndarray,
+    z_t: jnp.ndarray,
+    r_t: jnp.ndarray,
+    b_grid: jnp.ndarray,
+    y_grid: jnp.ndarray,
+    r_grid: jnp.ndarray,
+    w_grid: jnp.ndarray,
+    Ty: jnp.ndarray,
+    nb: int,
+    ny: int,
+    c_min: float,
+    n_min: float,
+    B_supply: float,
+    b_min: float,
+    b_max: float,
+):
+    """Find w_t to clear bond market at given (d_t, z_t, r_t) by bracket interpolation."""
+    nw = w_grid.shape[0]
+    res_vals = []
+    out_vals = []
+    for iw in range(nw):
+        out = macro_block_from_w(
+            theta_c, theta_n, d, z_t, r_t, w_grid[iw], b_grid, y_grid, r_grid, w_grid, Ty, nb, ny,
+            c_min, n_min, B_supply, b_min, b_max,
+        )
+        res_vals.append(out[0])
+        out_vals.append(out)
+    res = jnp.stack(res_vals)
+    ge = res >= 0.0
+    has_ge = jnp.any(ge)
+    first_ge = jnp.argmax(ge)
+    iw_hi_raw = jnp.where(has_ge, first_ge, nw - 1)
+    iw_hi = jnp.clip(iw_hi_raw, 1, nw - 1)
+    iw_lo = iw_hi - 1
+    r_lo = res[iw_lo]
+    r_hi = res[iw_hi]
+    w_mix = jnp.clip((0.0 - r_lo) / jnp.maximum(r_hi - r_lo, 1e-20), 0.0, 1.0)
+    w_t = w_grid[iw_lo] + w_mix * (w_grid[iw_hi] - w_grid[iw_lo])
 
-    return (B_next - B_supply) ** 2 + (N_supply - N_demand) ** 2
+    # Re-evaluate at interpolated wage.
+    out_star = macro_block_from_w(
+        theta_c, theta_n, d, z_t, r_t, w_t, b_grid, y_grid, r_grid, w_grid, Ty, nb, ny,
+        c_min, n_min, B_supply, b_min, b_max,
+    )
+    return w_t, out_star
 
 
 def spg_objective_hank(
@@ -225,8 +306,13 @@ def spg_objective_hank(
     B_supply: float,
     b_min: float,
     b_max: float,
-    theta_rot: float,
-    use_market_clearing: bool,
+    rho_r: float,
+    r_ss: float,
+    phi_pi: float,
+    phi_y: float,
+    sigma_r: float,
+    pi_target: float,
+    y_target: float,
 ) -> jnp.ndarray:
     nb = b_grid.shape[0]
     ny = y_grid.shape[0]
@@ -235,59 +321,35 @@ def spg_objective_hank(
         k, kz = jax.random.split(k)
         iz = jax.random.randint(kz, (), 0, z_grid.shape[0])
         d = d0
+        r_t = jnp.float32(r_ss)
         L_n = jnp.float32(0.0)
 
         for t in range(T_horizon):
-            c_pol, n_pol = theta_to_cn(theta_c, theta_n, c_min, n_min)
-
-            if use_market_clearing:
-                best = jnp.inf
-                ir_best, iw_best = 0, 0
-                for ir in range(r_grid.shape[0]):
-                    for iw in range(w_grid.shape[0]):
-                        res = market_clearing_residual(ir, iw, d, iz, c_pol, n_pol, b_grid, y_grid, z_grid,
-                                                       r_grid, w_grid, Ty, nb, ny, B_supply, b_min, b_max, theta_rot)
-                        cond = res < best
-                        best = jnp.where(cond, res, best)
-                        ir_best = jnp.where(cond, ir, ir_best)
-                        iw_best = jnp.where(cond, iw, iw_best)
-                ir, iw = ir_best, iw_best
-            else:
-                k, kr, kw = jax.random.split(k, 3)
-                ir = jax.random.randint(kr, (), 0, r_grid.shape[0])
-                iw = jax.random.randint(kw, (), 0, w_grid.shape[0])
-
-            r_t = jax.lax.stop_gradient(r_grid[ir])
-            w_t = jax.lax.stop_gradient(w_grid[iw])
             z_t = z_grid[iz]
-            T_t = r_t * B_supply
-
-            c_t = c_pol[:, ir, iw]
-            n_t = n_pol[:, ir, iw]
-
-            Pi_t = jnp.float32(0.0)
-            C_agg = jax.lax.stop_gradient((d * c_t).sum())
-            Y_t = Y_from_C_Pi(C_agg, Pi_t, theta_rot)
-            d_t = dividend_agg(Y_t, w_t, z_t, Pi_t, theta_rot)
-
-            L_n = L_n + (beta ** t) * (d * u_jax(c_t, n_t, sigma, eta, c_min, n_min)).sum()
-
-            b_vals = jnp.repeat(b_grid, ny)
-            y_vals = jnp.tile(y_grid, nb)
-            b_next = (1 + r_t) * b_vals + w_t * y_vals * n_t + d_t - T_t - c_t
-            b_next = jnp.clip(b_next, b_min, b_max)
-
-            dist = b_next[:, None] - b_grid[None, :]
-            w_b = jnp.exp(-(dist ** 2) / (2 * 0.5**2))
-            w_b = w_b / (w_b.sum(axis=1, keepdims=True) + 1e-8)
-            M = jnp.transpose(w_b.reshape(nb, ny, nb), (2, 0, 1))
-            d_mat = d.reshape(nb, ny)
-            Q = (M * d_mat[None, :, :]).sum(axis=1)
-            d = (Q @ Ty).reshape(nb * ny)
-            d = jax.lax.stop_gradient(d / (d.sum() + 1e-20))
+            r_t = jnp.clip(r_t, r_grid[0], r_grid[-1])
+            # Solve macro block off-graph (prices treated as given in policy gradient).
+            w_t, out = solve_w_given_rt(
+                jax.lax.stop_gradient(theta_c),
+                jax.lax.stop_gradient(theta_n),
+                jax.lax.stop_gradient(d),
+                z_t, r_t, b_grid, y_grid, r_grid, w_grid, Ty, nb, ny,
+                c_min, n_min, B_supply, b_min, b_max,
+            )
+            _bond_res, _c_macro, _n_macro, pi_t, y_t, d_next, _b_next = out
+            # Stop gradients through macro block (SRL convention).
+            w_t = jax.lax.stop_gradient(w_t)
+            pi_t = jax.lax.stop_gradient(pi_t)
+            y_t = jax.lax.stop_gradient(y_t)
+            c_t, n_t = policy_at_rw(theta_c, theta_n, r_t, w_t, r_grid, w_grid, c_min, n_min)
+            d_use = jax.lax.stop_gradient(d)
+            L_n = L_n + (beta ** t) * (d_use * u_jax(c_t, n_t, sigma, eta, c_min, n_min)).sum()
+            d = jax.lax.stop_gradient(d_next)
 
             k, kz = jax.random.split(k)
             iz = jax.random.choice(kz, z_grid.shape[0], p=Tz[iz, :])
+            k, ke = jax.random.split(k)
+            eps_r = jax.random.normal(ke, ())
+            r_t = (1.0 - rho_r) * r_ss + rho_r * r_t + phi_pi * (pi_t - pi_target) + phi_y * (y_t - y_target) + sigma_r * eps_r
         return L_n
 
     keys = jax.random.split(key, N_traj)
@@ -300,12 +362,26 @@ def main():
     parser.add_argument("--quick", action="store_true")
     parser.add_argument("--out_dir", type=str, default="one_account_hank_output")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--use_market_clearing", action="store_true", help="Solve (r,w) by grid-search clearing each period")
+    parser.add_argument("--rho_r", type=float, default=None, help="Taylor rule persistence")
+    parser.add_argument("--r_ss", type=float, default=None, help="Steady-state policy rate")
+    parser.add_argument("--phi_pi", type=float, default=None, help="Taylor loading on inflation")
+    parser.add_argument("--phi_y", type=float, default=None, help="Taylor loading on output gap")
+    parser.add_argument("--sigma_r", type=float, default=None, help="Taylor shock std")
     args = parser.parse_args()
 
     cal = get_calibration(quick=args.quick)
     if args.epochs is not None:
         cal["N_epoch"] = args.epochs
+    if args.rho_r is not None:
+        cal["rho_r"] = args.rho_r
+    if args.r_ss is not None:
+        cal["r_ss"] = args.r_ss
+    if args.phi_pi is not None:
+        cal["phi_pi"] = args.phi_pi
+    if args.phi_y is not None:
+        cal["phi_y"] = args.phi_y
+    if args.sigma_r is not None:
+        cal["sigma_r"] = args.sigma_r
 
     np.random.seed(args.seed)
 
@@ -347,8 +423,9 @@ def main():
             cal["N_sample"], cal["T_horizon"], d0,
             b_grid, y_grid, z_grid, r_grid, w_grid, Ty, Tz,
             cal["beta"], cal["sigma"], cal["eta"], cal["c_min"], cal["n_min"],
-            cal["B_supply"], cal["b_min"], cal["b_max"], cal["theta_rotemberg"],
-            args.use_market_clearing,
+            cal["B_supply"], cal["b_min"], cal["b_max"],
+            cal["rho_r"], cal["r_ss"], cal["phi_pi"], cal["phi_y"], cal["sigma_r"],
+            cal["pi_target"], cal["y_target"],
         )
 
     grad_fn = jax.grad(loss_fn, argnums=(0, 1))
@@ -357,7 +434,9 @@ def main():
 
     loss_hist = []
     print("HANK JAX: nb=%d ny=%d nz=%d nr=%d nw=%d epochs=%d" % (nb_spg, ny, nz_spg, nr_spg, nw_spg, cal["N_epoch"]))
-    print("JAX device:", jax.default_backend(), "market_clearing=", args.use_market_clearing)
+    print("JAX device:", jax.default_backend())
+    print("Taylor: rho_r=%.3f r_ss=%.3f phi_pi=%.3f phi_y=%.3f sigma_r=%.3f"
+          % (cal["rho_r"], cal["r_ss"], cal["phi_pi"], cal["phi_y"], cal["sigma_r"]))
 
     start = time.perf_counter()
     for epoch in range(cal["N_epoch"]):
