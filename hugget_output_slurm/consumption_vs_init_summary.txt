@@ -1,0 +1,8 @@
+mean_abs_diff=0.002755
+median_abs_diff=0.000000
+p95_abs_diff=0.000000
+mean_rel_diff=0.121962
+p95_rel_diff=0.000000
+line_diff_r=0.010000: mean=0.003980, max=0.330357
+line_diff_r=0.036316: mean=0.004630, max=0.308689
+line_diff_r=0.060000: mean=0.000000, max=0.000000

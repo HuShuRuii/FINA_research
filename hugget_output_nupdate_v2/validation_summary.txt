@@ -1,0 +1,10 @@
+is_valid=0
+residual_tol=1.00000000e-06
+diag_mean_residual=3.39093120e-01
+diag_max_abs_residual=3.74919057e-01
+touches_lower_bound=1
+touches_upper_bound=0
+steady_state_r=0.01000000
+steady_state_residual=3.40530068e-01
+steady_state_touches_lower=1
+steady_state_touches_upper=0

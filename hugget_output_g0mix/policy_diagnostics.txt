@@ -1,0 +1,4 @@
+Linear-shape diagnostics (y=mid, z=mid)
+ir=0 r=0.010000 R2_linear=0.99974061 mean_abs_d2=2.08869865e-01 p95_abs_d2=1.56107691e+00
+ir=10 r=0.036316 R2_linear=0.99997981 mean_abs_d2=2.64070533e-02 p95_abs_d2=4.47099485e-04
+ir=19 r=0.060000 R2_linear=0.99999993 mean_abs_d2=3.95753017e-03 p95_abs_d2=3.18296280e-05

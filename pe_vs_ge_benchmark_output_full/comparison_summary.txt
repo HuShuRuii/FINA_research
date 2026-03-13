@@ -1,0 +1,48 @@
+Focused comparison state: y=0.550000 z=0.940000 r=0.019000
+Borrowing constraint in both models: b' >= -1.000000
+
+GE equations and flow:
+  - Household policy loaded from saved GE benchmark c_GE(b,y,z,r).
+  - Interest rate is endogenous in GE and comes from period-by-period bond-market clearing.
+  - This benchmark uses the saved GE simulation path rather than altering the GE solver.
+
+PE equations and flow:
+  - Household policy solved on the same (b,y,z,r) grid as GE.
+  - y_t and z_t follow the same Markov processes as the GE calibration.
+  - r_{t+1} = (1-rho_r) * r_ss + rho_r * r_t + v_r * sqrt(max(0,r_t)) * eps_t.
+  - The PE household takes the exogenous r transition matrix as given.
+
+Conceptual mismatch fixed in this script:
+  - The previous PE comparison held y and z fixed in the Bellman problem, so it was not benchmarking PE and GE on the same state space.
+  - The updated PE code now keeps stochastic y_t and z_t and aligns the borrowing constraint exactly with GE.
+
+Numerical comparison at the requested fixed state:
+  - Mean |c_GE - c_PE| over b grid: 1.850997e+01
+  - Max  |c_GE - c_PE| over b grid: 3.828475e+01
+  - Mean |b'_GE - b'_PE| over b grid: 1.850997e+01
+  - Max  |b'_GE - b'_PE| over b grid: 3.828475e+01
+
+Distribution simulation setup:
+  - Common initial distribution: uniform over b and invariant over y.
+  - Common z path source: GE saved z_path.npy
+  - GE uses saved endogenous r path; PE uses exogenous r path starting from r0=0.019000.
+
+Distribution summaries at final simulation date:
+  - GE mean b: -0.000000
+  - PE mean b: 13.829015
+  - GE borrower share: 0.143619
+  - PE borrower share: 0.002282
+  - GE constraint share: 0.000000
+  - PE constraint share: 0.000451
+
+Interest-rate path summaries:
+  - GE mean/std r_t: 0.039360 / 0.001714
+  - PE mean/std r_t: 0.036922 / 0.005712
+  - PE path min/max r_t: 0.019000 / 0.054172
+  - GE max abs market-clearing residual in benchmark: 7.450581e-09
+
+Economic interpretation in this implementation:
+  - In PE, households face exogenous mean-reverting rate risk and do not move r_t through their aggregate savings.
+  - In GE, the same household states map into a policy that is evaluated at endogenous rates coming from market clearing.
+  - Differences in c(b) and b'(b) therefore reflect the fact that PE prices are taken as given, while GE prices feed back from the cross-sectional distribution and bond demand.
+  - Final PE Bellman sup-norm error: 2.988184e-04 after 200 iterations.

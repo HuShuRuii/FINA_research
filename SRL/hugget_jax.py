@@ -313,10 +313,11 @@ def simulate_diagnostics_path(
     b_min: float,
     b_max: float,
     c_min_val: float,
+    iz0: int | None = None,
 ) -> dict:
     """Simulate one path and return diagnostics for debugging/visualization."""
     G = _G_to_mat(G0, nb, ny)
-    iz = int(z_grid.shape[0] // 2)
+    iz = int(iz0) if iz0 is not None else int(z_grid.shape[0] // 2)
     r_path = np.zeros(T_diag, dtype=float)
     z_path = np.zeros(T_diag, dtype=int)
     residual_path = np.zeros(T_diag, dtype=float)
@@ -415,12 +416,145 @@ def one_step_trajectory(
     return (G_new, iz_new, L_n_new, key, new_beta_t), term
 
 
+def simulate_path_no_grad_single_traj(
+    key: jnp.ndarray,
+    theta: jnp.ndarray,
+    G0: jnp.ndarray,
+    iz0: jnp.ndarray,
+    T_horizon: int,
+    b_grid: jnp.ndarray,
+    y_grid: jnp.ndarray,
+    z_grid: jnp.ndarray,
+    r_grid: jnp.ndarray,
+    Ty: jnp.ndarray,
+    Tz: jnp.ndarray,
+    nb: int,
+    ny: int,
+    nz_spg: int,
+    B: float,
+    b_min: float,
+    b_max: float,
+    c_min_val: float,
+    warm_up: bool,
+) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """Simulate a full path with detached prices and detached stored states.
+    先做完整前向路径模拟：价格更新截断梯度，缓存下来的状态也不保留整条反向图。"""
+    G0_mat = _G_to_mat(G0, nb, ny)
+    iz0 = jnp.int32(iz0) if jnp.ndim(iz0) == 0 else iz0
+
+    def body(carry, _t):
+        G_cur, iz_cur, key_cur = carry
+        r_star, ir_lo, ir_hi, w_r = P_star_bracket(
+            theta, G_cur, iz_cur, b_grid, y_grid, z_grid, r_grid, ny, B, b_min, b_max, c_min_val
+        )
+        r_star = lax.stop_gradient(r_star)
+        ir_lo = lax.stop_gradient(ir_lo)
+        ir_hi = lax.stop_gradient(ir_hi)
+        w_r = lax.stop_gradient(w_r)
+
+        c = theta_to_c(theta, c_min_val)
+        c_iz = c[iz_cur, :, :, :]
+        c_t = (1.0 - w_r) * c_iz[ir_lo, :, :] + w_r * c_iz[ir_hi, :, :]
+        if warm_up:
+            G_next = G_cur
+        else:
+            G_next = update_G_from_c_and_r(
+                c_t, r_star, lax.stop_gradient(G_cur),
+                b_grid, y_grid, z_grid, iz_cur, Ty, nb, ny, b_min, b_max,
+            )
+        G_next = lax.stop_gradient(G_next)
+        key_next, subkey = jax.random.split(key_cur)
+        iz_next = jax.random.choice(subkey, nz_spg, p=Tz[iz_cur, :])
+        return (G_next, iz_next, key_next), (G_cur, iz_cur)
+
+    (G_final, iz_final, _), (G_hist, iz_hist) = jax.lax.scan(
+        body,
+        (G0_mat, iz0, key),
+        jnp.arange(T_horizon),
+    )
+    G_path = jnp.concatenate([G_hist, G_final[None, :, :]], axis=0)
+    iz_path = jnp.concatenate([iz_hist, jnp.asarray([iz_final], dtype=jnp.int32)], axis=0)
+    return G_path, iz_path, G_final.reshape(-1)
+
+
+def truncated_time_batch_objective_single_traj(
+    theta: jnp.ndarray,
+    G_path: jnp.ndarray,
+    iz_path: jnp.ndarray,
+    sample_ts: jnp.ndarray,
+    T_horizon: int,
+    n_update: int,
+    g_grad_window: int,
+    b_grid: jnp.ndarray,
+    y_grid: jnp.ndarray,
+    z_grid: jnp.ndarray,
+    r_grid: jnp.ndarray,
+    Ty: jnp.ndarray,
+    ny: int,
+    B: float,
+    b_min: float,
+    b_max: float,
+    c_min_val: float,
+    sigma: float,
+    beta: float,
+    e_trunc: float,
+    warm_up: bool,
+) -> jnp.ndarray:
+    """Replay only sampled time steps with a truncated G-gradient window.
+    只对抽样时点做短窗口回放，从而保留局部分布梯度、避免整条 170 期全量反传。"""
+    window = max(int(g_grad_window), 1)
+    n_update_eff = max(int(n_update), 1)
+    scale = jnp.asarray(T_horizon / n_update_eff, dtype=jnp.float32)
+
+    def term_for_t(t_idx):
+        t_idx = jnp.int32(t_idx)
+        start = jnp.maximum(t_idx - (window - 1), 0)
+        window_len = t_idx - start + 1
+        G_start = lax.stop_gradient(lax.dynamic_index_in_dim(G_path, start, axis=0, keepdims=False))
+
+        def window_body(carry, rel_step):
+            G_cur = carry
+            active = rel_step < window_len
+            global_t = start + rel_step
+            iz_cur = lax.dynamic_index_in_dim(iz_path, global_t, axis=0, keepdims=False)
+            r_star, ir_lo, ir_hi, w_r = P_star_bracket(
+                theta, G_cur, iz_cur, b_grid, y_grid, z_grid, r_grid, ny, B, b_min, b_max, c_min_val
+            )
+            r_star = lax.stop_gradient(r_star)
+            ir_lo = lax.stop_gradient(ir_lo)
+            ir_hi = lax.stop_gradient(ir_hi)
+            w_r = lax.stop_gradient(w_r)
+
+            c = theta_to_c(theta, c_min_val)
+            c_iz = c[iz_cur, :, :, :]
+            c_t = (1.0 - w_r) * c_iz[ir_lo, :, :] + w_r * c_iz[ir_hi, :, :]
+            weight = (beta ** global_t) * jnp.float32((beta ** global_t) >= e_trunc)
+            term = weight * (G_cur * u_jax(c_t, sigma, c_min_val)).sum()
+            if warm_up:
+                G_next = G_cur
+            else:
+                G_next = update_G_from_c_and_r(
+                    c_t, r_star, G_cur,
+                    b_grid, y_grid, z_grid, iz_cur, Ty, b_grid.shape[0], ny, b_min, b_max,
+                )
+            G_out = jnp.where(active, G_next, G_cur)
+            term_out = jnp.where(active & (global_t == t_idx), term, jnp.float32(0.0))
+            return G_out, term_out
+
+        _, term_hist = jax.lax.scan(window_body, G_start, jnp.arange(window))
+        return scale * term_hist.sum()
+
+    return jax.vmap(term_for_t)(sample_ts).mean()
+
+
 def spg_objective_single_traj(
     key: jnp.ndarray,
     theta: jnp.ndarray,
     G0: jnp.ndarray,
     iz0: jnp.ndarray,  # scalar (e.g. from vmap)
     T_horizon: int,
+    n_update: int,
+    g_grad_window: int,
     b_grid: jnp.ndarray,
     y_grid: jnp.ndarray,
     z_grid: jnp.ndarray,
@@ -440,39 +574,21 @@ def spg_objective_single_traj(
     sigma: float,
     warm_up: bool,
 ) -> jnp.ndarray:
-    """Single trajectory L_n and final distribution G_T."""
-    static = {
-        "theta": theta,
-        "b_grid": b_grid,
-        "y_grid": y_grid,
-        "z_grid": z_grid,
-        "r_grid": r_grid,
-        "Ty": Ty,
-        "Tz": Tz,
-        "nb": nb,
-        "ny": ny,
-        "nz_spg": nz_spg,
-        "nr_spg": nr_spg,
-        "beta": beta,
-        "e_trunc": e_trunc,
-        "B": B,
-        "b_min": b_min,
-        "b_max": b_max,
-        "c_min": c_min_val,
-        "sigma": sigma,
-        "warm_up": warm_up,
-    }
-    G = _G_to_mat(G0, nb, ny)
-    L_n = jnp.float32(0.0)
-    beta_t = jnp.float32(1.0)
-    iz = jnp.int32(iz0) if iz0.shape == () else iz0
-    carry = (G, iz, L_n, key, beta_t)
-    (G_final, iz_final, L_n_final, key_final, _), L_terms = jax.lax.scan(
-        lambda c, t: one_step_trajectory(c, t, static),
-        carry,
-        jnp.arange(T_horizon),
+    """Single-trajectory objective plus final distribution.
+    单条轨迹的目标值与终端分布。"""
+    key_path, key_sample = jax.random.split(key)
+    G_path, iz_path, G_final = simulate_path_no_grad_single_traj(
+        key_path, theta, G0, iz0, T_horizon,
+        b_grid, y_grid, z_grid, r_grid, Ty, Tz,
+        nb, ny, nz_spg, B, b_min, b_max, c_min_val, warm_up,
     )
-    return L_terms.sum(), G_final.reshape(-1)
+    n_update_eff = min(max(int(n_update), 1), int(T_horizon))
+    sample_ts = jax.random.choice(key_sample, T_horizon, shape=(n_update_eff,), replace=False)
+    L_n = truncated_time_batch_objective_single_traj(
+        theta, G_path, iz_path, sample_ts, T_horizon, n_update_eff, g_grad_window,
+        b_grid, y_grid, z_grid, r_grid, Ty, ny, B, b_min, b_max, c_min_val, sigma, beta, e_trunc, warm_up,
+    )
+    return L_n, G_final
 
 
 def spg_objective(
@@ -480,7 +596,9 @@ def spg_objective(
     key: jnp.ndarray,
     N_traj: int,
     T_horizon: int,
-    G0: jnp.ndarray,
+    n_update: int,
+    g_grad_window: int,
+    G0_batch: jnp.ndarray,
     b_grid: jnp.ndarray,
     y_grid: jnp.ndarray,
     z_grid: jnp.ndarray,
@@ -500,19 +618,22 @@ def spg_objective(
     sigma: float,
     warm_up: bool,
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    """Return (mean objective over trajectories, mean final distribution)."""
+    """Return mean objective and mean terminal distribution across trajectories.
+    返回跨轨迹平均目标值以及平均终端分布。"""
     key, k1, k2 = jax.random.split(key, 3)
     keys = jax.random.split(k1, N_traj)
     iz0s = jax.random.randint(k2, (N_traj,), 0, nz_spg)
+    if G0_batch.ndim == 1:
+        G0_batch = jnp.broadcast_to(G0_batch[None, :], (N_traj, G0_batch.shape[0]))
 
-    def body(key_i, iz0):
+    def body(key_i, iz0, G0_i):
         return spg_objective_single_traj(
-            key_i, theta, G0, iz0, T_horizon,
+            key_i, theta, G0_i, iz0, T_horizon, n_update, g_grad_window,
             b_grid, y_grid, z_grid, r_grid, Ty, Tz,
             nb, ny, nz_spg, nr_spg, beta, e_trunc, B, b_min, b_max, c_min_val, sigma, warm_up,
         )
 
-    L_list, G_final_list = jax.vmap(body)(keys, iz0s)
+    L_list, G_final_list = jax.vmap(body)(keys, iz0s, G0_batch)
     return jnp.mean(L_list), jnp.mean(G_final_list, axis=0)
 
 
@@ -559,6 +680,232 @@ def steady_state_G0(
     return G_final.reshape(-1)
 
 
+def build_uniform_b_G0(b_grid: jnp.ndarray, invariant_y: jnp.ndarray, ny: int) -> jnp.ndarray:
+    """Construct a broad initial distribution with uniform b mass and invariant y mass."""
+    del ny  # kept for interface symmetry with other G0 builders
+    w_b = jnp.ones_like(b_grid) / jnp.maximum(b_grid.shape[0], 1)
+    w_y = invariant_y / jnp.maximum(invariant_y.sum(), 1e-20)
+    G = w_b[:, None] * w_y[None, :]
+    return (G / jnp.maximum(G.sum(), 1e-20)).reshape(-1)
+
+
+def build_high_b_G0(b_grid: jnp.ndarray, invariant_y: jnp.ndarray, ny: int, high_power: float = 6.0) -> jnp.ndarray:
+    """Construct an initial distribution concentrated on high-b region."""
+    del ny  # kept for interface symmetry with other G0 builders
+    b01 = (b_grid - b_grid.min()) / jnp.maximum(b_grid.max() - b_grid.min(), 1e-20)
+    w_b = jnp.maximum(b01, 1e-6) ** high_power
+    w_b = w_b / jnp.maximum(w_b.sum(), 1e-20)
+    w_y = invariant_y / jnp.maximum(invariant_y.sum(), 1e-20)
+    G = w_b[:, None] * w_y[None, :]
+    return (G / jnp.maximum(G.sum(), 1e-20)).reshape(-1)
+
+
+def sample_training_G0_batch(
+    key: jnp.ndarray,
+    n_traj: int,
+    G0_anchor: jnp.ndarray,
+    G0_uniform: jnp.ndarray,
+    G0_high_b: jnp.ndarray,
+    broad_share: float,
+    beta_concentration: float,
+) -> jnp.ndarray:
+    """Sample a batch of broad but GE-valid initial distributions for post-warm-up training.
+
+    Each trajectory starts from a convex combination of the steady-state anchor and a broad
+    perturbation spanning uniform to high-b cross sections. This broadens coverage while
+    keeping the original GE/SPG objective unchanged.
+    """
+    share = jnp.clip(jnp.asarray(broad_share, dtype=G0_anchor.dtype), 0.0, 1.0)
+    conc = jnp.maximum(jnp.asarray(beta_concentration, dtype=G0_anchor.dtype), 1e-3)
+    high_b_weight = jax.random.beta(key, conc, conc, shape=(n_traj, 1))
+    G_broad = (1.0 - high_b_weight) * G0_uniform[None, :] + high_b_weight * G0_high_b[None, :]
+    G0_batch = (1.0 - share) * G0_anchor[None, :] + share * G_broad
+    return G0_batch / jnp.maximum(G0_batch.sum(axis=1, keepdims=True), 1e-20)
+
+
+def interpolate_c_at_r(
+    theta: jnp.ndarray,
+    iz: int,
+    r_star: jnp.ndarray,
+    r_grid: jnp.ndarray,
+    c_min_val: float,
+) -> jnp.ndarray:
+    """Interpolate policy in r for a fixed z, returning c_t with shape (nb, ny)."""
+    nr = r_grid.shape[0]
+    c = theta_to_c(theta, c_min_val)
+    if nr == 1:
+        return c[iz, 0, :, :]
+    ir_hi = jnp.clip(jnp.searchsorted(r_grid, r_star, side="right"), 1, nr - 1)
+    ir_lo = ir_hi - 1
+    denom = jnp.maximum(r_grid[ir_hi] - r_grid[ir_lo], 1e-20)
+    w_r = (r_star - r_grid[ir_lo]) / denom
+    c_iz = c[iz, :, :, :]
+    return (1.0 - w_r) * c_iz[ir_lo, :, :] + w_r * c_iz[ir_hi, :, :]
+
+
+def stationary_distribution_given_r(
+    theta: jnp.ndarray,
+    r_star: jnp.ndarray,
+    G_init: jnp.ndarray,
+    iz: int,
+    b_grid: jnp.ndarray,
+    y_grid: jnp.ndarray,
+    z_grid: jnp.ndarray,
+    r_grid: jnp.ndarray,
+    Ty: jnp.ndarray,
+    nb: int,
+    ny: int,
+    b_min: float,
+    b_max: float,
+    c_min_val: float,
+    n_iter: int = 500,
+    tol: float = 1e-10,
+) -> jnp.ndarray:
+    """Invariant distribution for fixed (z, r) and current policy."""
+    G = _G_to_mat(G_init, nb, ny)
+    c_t = interpolate_c_at_r(theta, iz, r_star, r_grid, c_min_val)
+    for _ in range(n_iter):
+        G_new = update_G_from_c_and_r(c_t, r_star, G, b_grid, y_grid, z_grid, iz, Ty, nb, ny, b_min, b_max)
+        if float(jnp.max(jnp.abs(G_new - G))) < tol:
+            G = G_new
+            break
+        G = G_new
+    return G.reshape(-1)
+
+
+def solve_huggett_steady_state(
+    theta: jnp.ndarray,
+    G_init: jnp.ndarray,
+    b_grid: jnp.ndarray,
+    y_grid: jnp.ndarray,
+    z_grid: jnp.ndarray,
+    r_grid: jnp.ndarray,
+    Ty: jnp.ndarray,
+    nb: int,
+    ny: int,
+    B: float,
+    b_min: float,
+    b_max: float,
+    c_min_val: float,
+    n_outer: int = 80,
+    r_tol: float = 1e-8,
+    g_tol: float = 1e-10,
+) -> dict:
+    """Solve deterministic steady state at z≈1 by fixed point in (G, r)."""
+    iz_ss = int(jnp.argmin(jnp.abs(z_grid - 1.0)))
+    r_ss = jnp.array(r_grid[r_grid.shape[0] // 2], dtype=jnp.float32)
+    G_ss = G_init
+    outer_hist = []
+    for _ in range(n_outer):
+        G_prev = G_ss
+        r_prev = r_ss
+        G_ss = stationary_distribution_given_r(
+            theta, r_ss, G_ss, iz_ss,
+            b_grid, y_grid, z_grid, r_grid, Ty, nb, ny,
+            b_min, b_max, c_min_val,
+        )
+        r_ss, ir_lo, ir_hi, w_r, residual = market_clearing_stats(
+            theta, G_ss, iz_ss, b_grid, y_grid, z_grid, r_grid, ny, B, b_min, b_max, c_min_val
+        )
+        outer_hist.append((float(r_ss), float(residual), float(jnp.max(jnp.abs(G_ss - G_prev)))))
+        if float(jnp.abs(r_ss - r_prev)) < r_tol and float(jnp.max(jnp.abs(G_ss - G_prev))) < g_tol:
+            break
+    G_mat = np.array(_G_to_mat(G_ss, nb, ny))
+    b_mass = G_mat.sum(axis=1)
+    return {
+        "iz_ss": iz_ss,
+        "z_ss": float(z_grid[iz_ss]),
+        "r_ss": float(r_ss),
+        "residual": float(residual),
+        "G_ss": np.array(G_ss),
+        "b_mass": b_mass,
+        "outer_hist": np.array(outer_hist, dtype=float),
+        "ir_lo": int(ir_lo),
+        "ir_hi": int(ir_hi),
+        "w_r": float(w_r),
+    }
+
+
+def policy_change_summary(
+    c_final_np: np.ndarray,
+    c_init_np: np.ndarray,
+    b_grid_np: np.ndarray,
+) -> dict:
+    """Summarize how much the trained policy moved relative to initialization."""
+    diff = np.abs(c_final_np - c_init_np)
+    rel = diff / np.maximum(np.abs(c_init_np), 1e-8)
+    abs_by_b = diff.mean(axis=(1, 2, 3))
+    return {
+        "diff": diff,
+        "rel": rel,
+        "abs_by_b": abs_by_b,
+        "mean_abs": float(diff.mean()),
+        "median_abs": float(np.median(diff)),
+        "p90_abs": float(np.quantile(diff, 0.9)),
+        "p99_abs": float(np.quantile(diff, 0.99)),
+        "mean_rel": float(rel.mean()),
+        "median_rel": float(np.median(rel)),
+        "p90_rel": float(np.quantile(rel, 0.9)),
+        "p99_rel": float(np.quantile(rel, 0.99)),
+        "share_abs_le_1e-4": float((diff <= 1e-4).mean()),
+        "share_abs_le_1e-3": float((diff <= 1e-3).mean()),
+        "share_abs_le_1e-2": float((diff <= 1e-2).mean()),
+        "share_abs_le_5e-2": float((diff <= 5e-2).mean()),
+        "share_abs_le_1e-1": float((diff <= 1e-1).mean()),
+        "share_b_mean_abs_le_1e-2": float((abs_by_b <= 1e-2).mean()),
+        "mass_change_b_le_2": float(abs_by_b[b_grid_np <= 2.0].mean()) if np.any(b_grid_np <= 2.0) else float("nan"),
+        "mass_change_b_2_10": float(abs_by_b[(b_grid_np > 2.0) & (b_grid_np <= 10.0)].mean())
+        if np.any((b_grid_np > 2.0) & (b_grid_np <= 10.0)) else float("nan"),
+        "mass_change_b_gt_10": float(abs_by_b[b_grid_np > 10.0].mean()) if np.any(b_grid_np > 10.0) else float("nan"),
+    }
+
+
+def validate_solution(
+    r_path: np.ndarray,
+    residual_path: np.ndarray,
+    r_grid_np: np.ndarray,
+    residual_tol: float,
+    ss: dict | None = None,
+) -> dict:
+    """Check whether the learned GE solution stays away from invalid boundary outcomes."""
+    if r_grid_np.shape[0] > 1:
+        boundary_buffer = 0.5 * float(r_grid_np[1] - r_grid_np[0])
+    else:
+        boundary_buffer = 0.0
+    r_min = float(r_grid_np[0])
+    r_max = float(r_grid_np[-1])
+    max_abs_resid = float(np.max(np.abs(residual_path)))
+    touches_lower = bool(np.any(r_path <= r_min + boundary_buffer))
+    touches_upper = bool(np.any(r_path >= r_max - boundary_buffer))
+    ss_touches_lower = False
+    ss_touches_upper = False
+    ss_resid = None
+    ss_r = None
+    if ss is not None:
+        ss_r = float(ss["r_ss"])
+        ss_resid = float(ss["residual"])
+        ss_touches_lower = bool(ss_r <= r_min + boundary_buffer)
+        ss_touches_upper = bool(ss_r >= r_max - boundary_buffer)
+    is_valid = (max_abs_resid <= residual_tol) and (not touches_lower) and (not touches_upper)
+    if ss is not None:
+        is_valid = is_valid and (abs(ss_resid) <= residual_tol) and (not ss_touches_lower) and (not ss_touches_upper)
+    return {
+        "is_valid": bool(is_valid),
+        "max_abs_residual": max_abs_resid,
+        "mean_residual": float(np.mean(residual_path)),
+        "touches_lower_bound": touches_lower,
+        "touches_upper_bound": touches_upper,
+        "boundary_buffer": boundary_buffer,
+        "r_min": r_min,
+        "r_max": r_max,
+        "steady_state_r": ss_r,
+        "steady_state_residual": ss_resid,
+        "steady_state_touches_lower": ss_touches_lower,
+        "steady_state_touches_upper": ss_touches_upper,
+        "residual_tol": float(residual_tol),
+    }
+
+
 def policy_from_grid(b, iy, iz, ir_or_r, c_grid, b_grid, y_grid, z_grid, r_grid, c_min_val=1e-3):
     """b: continuous (lottery). ir_or_r: int = grid index; float = r value (linear interp in r).
     c_grid shape (nb, ny, nz, nr). Returns (c, b_next)."""
@@ -603,6 +950,35 @@ def main():
     parser.add_argument("--lr_decay", type=float, default=None, help="Override lr decay factor")
     parser.add_argument("--log_every", type=int, default=10, help="Print progress every N epochs")
     parser.add_argument("--diag_steps", type=int, default=200, help="Length of post-training diagnostic simulation path")
+    parser.add_argument("--n_update", type=int, default=16,
+                        help="Number of sampled time steps per trajectory used in each gradient update")
+    parser.add_argument("--g_grad_window", type=int, default=10,
+                        help="Truncated horizon for distribution-gradient replay around each sampled time step")
+    parser.add_argument("--g0_mode", type=str, default="steady_high_mix",
+                        choices=["steady", "uniform", "high_b", "steady_high_mix"],
+                        help="Warm-up initial distribution setup")
+    parser.add_argument("--g0_high_mix_warmup", type=float, default=0.8,
+                        help="Mix weight of high-b G0 during warm-up")
+    parser.add_argument("--g0_high_mix_after", type=float, default=0.5,
+                        help="High-b share in the adaptive post-warm-up GE anchor")
+    parser.add_argument("--g0_high_power", type=float, default=6.0,
+                        help="Concentration power for high-b initial distribution")
+    parser.add_argument("--coverage_traj_share", type=float, default=0.25,
+                        help="Share of post-warm-up trajectories started from broad GE-valid G0s")
+    parser.add_argument("--coverage_decay_epochs", type=int, default=150,
+                        help="Number of post-warm-up epochs over which broad-start coverage decays to zero")
+    parser.add_argument("--post_warmup_broad_share", type=float, default=1.0,
+                        help="Broadness of the extra coverage trajectories after warm-up")
+    parser.add_argument("--post_warmup_beta_conc", type=float, default=0.7,
+                        help="Beta concentration for uniform-vs-high-b broad perturbations")
+    parser.add_argument("--explore_weight", type=float, default=0.0,
+                        help="Deprecated. Must remain 0 to preserve the GE objective.")
+    parser.add_argument("--explore_high_b_mix", type=float, default=0.6,
+                        help="Deprecated and ignored")
+    parser.add_argument("--solve_steady_state", action="store_true",
+                        help="Solve and save deterministic steady state diagnostics after training")
+    parser.add_argument("--residual_valid_tol", type=float, default=1e-6,
+                        help="Validity tolerance for market-clearing residual checks")
     args = parser.parse_args()
 
     quick = args.quick or args.benchmark
@@ -619,6 +995,11 @@ def main():
         cal["lr_ini"] = args.lr_ini
     if args.lr_decay is not None:
         cal["lr_decay"] = args.lr_decay
+    if args.explore_weight != 0.0:
+        raise ValueError(
+            "--explore_weight changes the GE objective and is disabled. "
+            "Use the steady-state-anchored post-warm-up G0 broadening instead."
+        )
 
     beta = cal["beta"]
     sigma = cal["sigma"]
@@ -658,24 +1039,62 @@ def main():
     key_init, key_train = jax.random.split(key)
 
     theta = init_theta(b_grid, y_grid, z_grid, r_grid, save_frac=0.2, c_min_val=c_min)
+    theta_init = theta
     G0_steady = steady_state_G0(
         theta, b_grid, y_grid, z_grid, r_grid, Ty,
         nb_spg, ny, nz_spg, nr_spg, b_min, b_max, c_min,
     )
+    invariant_y_jax = jnp.array(invariant_y)
+    G0_uniform = build_uniform_b_G0(b_grid, invariant_y_jax, ny)
+    G0_high_b = build_high_b_G0(b_grid, invariant_y_jax, ny, high_power=args.g0_high_power)
+
+    if args.g0_mode == "steady":
+        G0_warmup_base = G0_steady
+    elif args.g0_mode == "uniform":
+        G0_warmup_base = G0_uniform
+    elif args.g0_mode == "high_b":
+        G0_warmup_base = G0_high_b
+    else:  # steady_high_mix
+        mix_w = float(np.clip(args.g0_high_mix_warmup, 0.0, 1.0))
+        G0_warmup_base = (1.0 - mix_w) * G0_steady + mix_w * G0_high_b
+        G0_warmup_base = G0_warmup_base / jnp.maximum(G0_warmup_base.sum(), 1e-20)
     T_horizon = cal["T_trunc"]
 
     # Objective and gradient
-    def objective_fn(theta, key, G0, warm_up):
+    def make_G0_batch(key, warm_up, G0_anchor, coverage_share):
+        if warm_up:
+            return jnp.broadcast_to(G0_warmup_base[None, :], (cal["N_sample"], G0_warmup_base.shape[0]))
+        G0_anchor_batch = jnp.broadcast_to(G0_anchor[None, :], (cal["N_sample"], G0_anchor.shape[0]))
+        if coverage_share <= 0.0:
+            return G0_anchor_batch
+        key_mask, key_cov = jax.random.split(key)
+        G0_cov_batch = sample_training_G0_batch(
+            key_cov,
+            cal["N_sample"],
+            G0_anchor,
+            G0_uniform,
+            G0_high_b,
+            args.post_warmup_broad_share,
+            args.post_warmup_beta_conc,
+        )
+        use_cov = jax.random.bernoulli(
+            key_mask,
+            p=jnp.clip(jnp.asarray(coverage_share, dtype=G0_anchor.dtype), 0.0, 1.0),
+            shape=(cal["N_sample"], 1),
+        )
+        return jnp.where(use_cov, G0_cov_batch, G0_anchor_batch)
+
+    def objective_fn(theta, key, G0_batch, warm_up):
         return spg_objective(
-            theta, key, cal["N_sample"], T_horizon, G0,
+            theta, key, cal["N_sample"], T_horizon, args.n_update, args.g_grad_window, G0_batch,
             b_grid, y_grid, z_grid, r_grid, Ty, Tz,
             nb_spg, ny, nz_spg, nr_spg, beta, cal["e_trunc"], B,
             b_min, b_max, c_min, sigma, warm_up,
         )
 
-    def loss_with_aux(theta, key, G0, warm_up):
-        L_val, G_end_mean = objective_fn(theta, key, G0, warm_up)
-        return -L_val, G_end_mean
+    def loss_with_aux(theta, key, G0_batch, warm_up):
+        L_main, G_end_mean = objective_fn(theta, key, G0_batch, warm_up)
+        return -L_main, (G_end_mean, L_main)
 
     value_and_grad_fn = jax.jit(
         jax.value_and_grad(loss_with_aux, argnums=0, has_aux=True),
@@ -695,24 +1114,58 @@ def main():
     print("Huggett JAX: nb=%d, ny=%d, nz_spg=%d, nr_spg=%d, N_epoch=%d, N_sample=%d"
           % (nb_spg, ny, nz_spg, nr_spg, cal["N_epoch"], cal["N_sample"]), flush=True)
     print("JAX device:", jax.default_backend(), flush=True)
+    print(
+        "Warm-up G0: mode=%s, high_mix=%.2f, high_power=%.1f"
+        % (args.g0_mode, args.g0_high_mix_warmup, args.g0_high_power),
+        flush=True,
+    )
+    print(
+        "Post-warm-up GE anchor: high_mix=%.2f, coverage_traj_share=%.2f, coverage_decay_epochs=%d, coverage_broad_share=%.2f, beta_conc=%.2f"
+        % (
+            args.g0_high_mix_after,
+            args.coverage_traj_share,
+            args.coverage_decay_epochs,
+            args.post_warmup_broad_share,
+            args.post_warmup_beta_conc,
+        ),
+        flush=True,
+    )
+    print(
+        "Time minibatch: n_update=%d, g_grad_window=%d, T_horizon=%d"
+        % (args.n_update, args.g_grad_window, T_horizon),
+        flush=True,
+    )
 
     start = time.perf_counter()
-    G0_adaptive = G0_steady
+    G0_adaptive = G0_warmup_base
     for epoch in range(cal["N_epoch"]):
         warm_up = epoch < cal["N_warmup"]
-        key_train, key_epoch = jax.random.split(key_train)
-        G0_phase = G0_steady if warm_up else G0_adaptive
+        key_train, key_epoch, key_g0 = jax.random.split(key_train, 3)
+        if warm_up:
+            G0_anchor = G0_warmup_base
+            coverage_share_t = 0.0
+        else:
+            mix_a = float(np.clip(args.g0_high_mix_after, 0.0, 1.0))
+            G0_anchor = (1.0 - mix_a) * G0_adaptive + mix_a * G0_high_b
+            G0_anchor = G0_anchor / jnp.maximum(G0_anchor.sum(), 1e-20)
+            if args.coverage_decay_epochs <= 0:
+                coverage_share_t = 0.0
+            else:
+                post_warm_epoch = max(epoch - cal["N_warmup"], 0)
+                decay = max(0.0, 1.0 - post_warm_epoch / float(args.coverage_decay_epochs))
+                coverage_share_t = float(args.coverage_traj_share) * decay
+        G0_batch = make_G0_batch(key_g0, warm_up, G0_anchor, coverage_share_t)
 
         theta_old = theta
-        (loss_val, G_end_mean), g = value_and_grad_fn(theta, key_epoch, G0_phase, warm_up)
-        L_val = -loss_val
+        (loss_val, (G_end_mean, L_main)), g = value_and_grad_fn(theta, key_epoch, G0_batch, warm_up)
+        L_total = -loss_val
         updates, opt_state = optimizer.update(g, opt_state)
         theta = optax.apply_updates(theta, updates)
 
         if not warm_up:
             G0_adaptive = jax.lax.stop_gradient(G_end_mean)
 
-        loss_hist.append(float(L_val))
+        loss_hist.append(float(L_total))
         param_change = float(jnp.abs(theta - theta_old).max())
         lr_t = lr_schedule(epoch)
         if param_change < cal["e_converge"]:
@@ -720,8 +1173,11 @@ def main():
             break
         if (epoch + 1) % args.log_every == 0 or (epoch + 1) <= 5 or (epoch + 1) == cal["N_warmup"]:
             phase = "warm-up (G fixed)" if warm_up else "G evolves"
-            print("Epoch %d, L(θ) = %.6f, lr = %.2e, |Δθ| = %.2e, %s"
-                  % (epoch + 1, L_val, lr_t, param_change, phase), flush=True)
+            print(
+                "Epoch %d, L_total = %.6f, lr = %.2e, |Δθ| = %.2e, %s"
+                % (epoch + 1, L_total, lr_t, param_change, phase),
+                flush=True,
+            )
 
     elapsed = time.perf_counter() - start
     print("Training done in %.2f s (%d epochs)" % (elapsed, len(loss_hist)), flush=True)
@@ -732,13 +1188,23 @@ def main():
     os.makedirs(args.out_dir, exist_ok=True)
     c_grid_jax = theta_to_c(theta, c_min)  # (nz, nr, nb, ny)
     c_grid_np = np.array(c_grid_jax).transpose(2, 3, 0, 1)  # (nb, ny, nz, nr) for policy_from_grid
+    c_init_np = np.array(theta_to_c(theta_init, c_min)).transpose(2, 3, 0, 1)
     b_grid_np = np.array(b_grid)
     y_grid_np = np.array(y_grid)
     z_grid_np = np.array(z_grid)
     r_grid_np = np.array(r_grid)
+    G0_basis_mass = {
+        "steady": np.array(_G_to_mat(G0_steady, nb_spg, ny)).sum(axis=1),
+        "uniform": np.array(_G_to_mat(G0_uniform, nb_spg, ny)).sum(axis=1),
+        "high_b": np.array(_G_to_mat(G0_high_b, nb_spg, ny)).sum(axis=1),
+        "warmup": np.array(_G_to_mat(G0_warmup_base, nb_spg, ny)).sum(axis=1),
+    }
 
     def policy_cur(b, iy, iz, ir):
         return policy_from_grid(b, iy, iz, ir, c_grid_np, b_grid_np, y_grid_np, z_grid_np, r_grid_np, c_min_val=c_min)
+
+    def policy_init(b, iy, iz, ir):
+        return policy_from_grid(b, iy, iz, ir, c_init_np, b_grid_np, y_grid_np, z_grid_np, r_grid_np, c_min_val=c_min)
 
     plt.rcParams["font.size"] = 10
     plt.rcParams["axes.unicode_minus"] = False
@@ -754,6 +1220,20 @@ def main():
     fig.savefig(os.path.join(args.out_dir, "loss_curve.png"), dpi=150, bbox_inches="tight")
     plt.close(fig)
     print("Saved %s" % os.path.join(args.out_dir, "loss_curve.png"), flush=True)
+
+    # 1a. Training G0 bases over b to document coverage design
+    fig, ax = plt.subplots(1, 1, figsize=(8, 4))
+    for label, b_mass in G0_basis_mass.items():
+        ax.plot(b_grid_np, b_mass, linewidth=2, label=label)
+    ax.set_xlabel("b")
+    ax.set_ylabel("mass")
+    ax.set_title("Warm-up and post-warm-up G0 building blocks")
+    ax.grid(alpha=0.3)
+    ax.legend()
+    plt.tight_layout()
+    fig.savefig(os.path.join(args.out_dir, "training_g0_bases.png"), dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print("Saved %s" % os.path.join(args.out_dir, "training_g0_bases.png"), flush=True)
 
     # 2. Consumption policy c(b, y, r, z) — grid of c vs b for different r, z
     fig, axs = plt.subplots(3, 3, figsize=(18, 9))
@@ -797,6 +1277,29 @@ def main():
     fig.savefig(os.path.join(args.out_dir, "consumption_policy_grid_zoom_low_b.png"), dpi=150, bbox_inches="tight")
     plt.close(fig)
     print("Saved %s" % os.path.join(args.out_dir, "consumption_policy_grid_zoom_low_b.png"), flush=True)
+
+    # 2a-bis. Final policy versus initialization on the economically relevant low-b region
+    fig, axs = plt.subplots(3, 3, figsize=(18, 9))
+    for row, ir_v in enumerate(ir_indices[:3]):
+        for col, iz_v in enumerate(iz_indices):
+            ax = axs[row, col]
+            iy_v = 1
+            b_lin = np.linspace(b_min, b_zoom_max, 200)
+            c_init_line, _ = policy_init(b_lin, iy_v, iz_v, ir_v)
+            c_final_line, _ = policy_cur(b_lin, iy_v, iz_v, ir_v)
+            ax.plot(b_lin, c_init_line, "--", linewidth=1.5, label="init")
+            ax.plot(b_lin, c_final_line, linewidth=2.0, label="final")
+            ax.set_xlabel("Bond holdings b (zoom)")
+            ax.set_ylabel("Consumption c")
+            ax.set_title("r=%.4f, z=%.2f" % (r_grid_np[ir_v], z_grid_np[iz_v]))
+            ax.grid(alpha=0.3)
+            if row == 0 and col == 0:
+                ax.legend()
+    fig.suptitle("Policy comparison versus initialization")
+    plt.tight_layout(rect=(0, 0, 1, 0.96))
+    fig.savefig(os.path.join(args.out_dir, "policy_vs_init_low_b.png"), dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print("Saved %s" % os.path.join(args.out_dir, "policy_vs_init_low_b.png"), flush=True)
 
     # 2b. Policy curvature diagnostics: detect near-linear shape in b-dimension
     fig, axs = plt.subplots(1, 3, figsize=(18, 4))
@@ -869,12 +1372,91 @@ def main():
     plt.close(fig)
     print("Saved %s" % os.path.join(args.out_dir, "savings_policy_vs_b.png"), flush=True)
 
-    # 5. Post-training diagnostics path: p/r trajectory, clearing residual, mean assets
+    policy_change = policy_change_summary(c_grid_np, c_init_np, b_grid_np)
+    fig, ax = plt.subplots(1, 1, figsize=(8, 4))
+    ax.plot(b_grid_np, policy_change["abs_by_b"], linewidth=2, label="mean |c_final-c_init|")
+    ax.set_xlabel("b")
+    ax.set_ylabel("mean absolute change")
+    ax.set_title("Policy movement versus initialization")
+    ax.grid(alpha=0.3)
+    ax.legend()
+    plt.tight_layout()
+    fig.savefig(os.path.join(args.out_dir, "policy_change_by_b.png"), dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print("Saved %s" % os.path.join(args.out_dir, "policy_change_by_b.png"), flush=True)
+
+    # 5. Steady-state diagnostics and simulated GE path
+    ss = None
+    G0_diag = steady_state_G0(
+        theta, b_grid, y_grid, z_grid, r_grid, Ty,
+        nb_spg, ny, nz_spg, nr_spg, b_min, b_max, c_min,
+    )
+    iz_diag = int(len(z_grid_np) // 2)
+    if args.solve_steady_state:
+        ss = solve_huggett_steady_state(
+            theta, G0_diag, b_grid, y_grid, z_grid, r_grid, Ty,
+            nb_spg, ny, B, b_min, b_max, c_min,
+        )
+        G0_diag = jnp.array(ss["G_ss"])
+        iz_diag = int(ss["iz_ss"])
+        np.save(os.path.join(args.out_dir, "steady_state_G.npy"), ss["G_ss"])
+        np.save(os.path.join(args.out_dir, "steady_state_b_mass.npy"), ss["b_mass"])
+        np.save(os.path.join(args.out_dir, "steady_state_outer_hist.npy"), ss["outer_hist"])
+
+        fig, ax = plt.subplots(1, 1, figsize=(8, 4))
+        ax.plot(b_grid_np, ss["b_mass"], linewidth=2)
+        ax.set_xlabel("b")
+        ax.set_ylabel("steady-state mass")
+        ax.set_title("Deterministic steady-state mass over b")
+        ax.grid(alpha=0.3)
+        plt.tight_layout()
+        fig.savefig(os.path.join(args.out_dir, "steady_state_b_mass.png"), dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print("Saved %s" % os.path.join(args.out_dir, "steady_state_b_mass.png"), flush=True)
+
+        fig, axs = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
+        outer_hist = ss["outer_hist"]
+        axs[0].plot(outer_hist[:, 0], linewidth=2)
+        axs[0].set_ylabel("r")
+        axs[0].set_title("Steady-state outer iterations")
+        axs[0].grid(alpha=0.3)
+        axs[1].plot(outer_hist[:, 1], linewidth=2, label="market residual")
+        axs[1].plot(outer_hist[:, 2], linewidth=2, label="max |ΔG|")
+        axs[1].set_xlabel("outer iteration")
+        axs[1].set_ylabel("diagnostic")
+        axs[1].grid(alpha=0.3)
+        axs[1].legend()
+        plt.tight_layout()
+        fig.savefig(os.path.join(args.out_dir, "steady_state_outer_iterations.png"), dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print("Saved %s" % os.path.join(args.out_dir, "steady_state_outer_iterations.png"), flush=True)
+
+        cum_mass = np.cumsum(ss["b_mass"])
+        support_1e6 = b_grid_np[ss["b_mass"] > 1e-6]
+        support_1e4 = b_grid_np[ss["b_mass"] > 1e-4]
+        with open(os.path.join(args.out_dir, "steady_state_summary.txt"), "w") as f:
+            f.write("z_ss=%.8f\n" % ss["z_ss"])
+            f.write("r_ss=%.8f\n" % ss["r_ss"])
+            f.write("market_residual=%.8e\n" % ss["residual"])
+            f.write("ir_lo=%d ir_hi=%d w_r=%.8f\n" % (ss["ir_lo"], ss["ir_hi"], ss["w_r"]))
+            f.write("mass_b_le_2=%.8f\n" % float(np.sum(ss["b_mass"][b_grid_np <= 2.0])))
+            f.write("mass_b_le_6=%.8f\n" % float(np.sum(ss["b_mass"][b_grid_np <= 6.0])))
+            f.write("mass_b_gt_10=%.8f\n" % float(np.sum(ss["b_mass"][b_grid_np > 10.0])))
+            f.write("mass_b_gt_20=%.8f\n" % float(np.sum(ss["b_mass"][b_grid_np > 20.0])))
+            f.write("max_b_with_mass_gt_1e-6=%.8f\n" % float(support_1e6.max() if support_1e6.size else b_grid_np[0]))
+            f.write("max_b_with_mass_gt_1e-4=%.8f\n" % float(support_1e4.max() if support_1e4.size else b_grid_np[0]))
+            for q in [0.5, 0.9, 0.95, 0.99, 0.999]:
+                ib = int(np.searchsorted(cum_mass, q, side="left"))
+                ib = min(ib, len(b_grid_np) - 1)
+                f.write("b_quantile_%0.3f=%.8f\n" % (q, b_grid_np[ib]))
+        print("Saved %s" % os.path.join(args.out_dir, "steady_state_summary.txt"), flush=True)
+
     key_train, key_diag = jax.random.split(key_train)
     diag = simulate_diagnostics_path(
-        theta, G0_adaptive, key_diag, args.diag_steps,
+        theta, G0_diag, key_diag, args.diag_steps,
         b_grid, y_grid, z_grid, r_grid, Ty, Tz,
         nb_spg, ny, B, b_min, b_max, c_min,
+        iz0=iz_diag,
     )
     np.save(os.path.join(args.out_dir, "r_path.npy"), diag["r_path"])
     np.save(os.path.join(args.out_dir, "z_path.npy"), diag["z_path"])
@@ -921,12 +1503,15 @@ def main():
     plt.close(fig)
     print("Saved %s" % os.path.join(args.out_dir, "mean_b_trajectory.png"), flush=True)
 
+    validity = validate_solution(diag["r_path"], diag["residual_path"], r_grid_np, args.residual_valid_tol, ss=ss)
+
     # 4. Full grid and loss history as files
     np.save(os.path.join(args.out_dir, "c_grid.npy"), c_grid_np)
     np.save(os.path.join(args.out_dir, "b_grid.npy"), b_grid_np)
     np.save(os.path.join(args.out_dir, "y_grid.npy"), y_grid_np)
     np.save(os.path.join(args.out_dir, "z_grid.npy"), z_grid_np)
     np.save(os.path.join(args.out_dir, "r_grid.npy"), r_grid_np)
+    np.save(os.path.join(args.out_dir, "c_init_grid.npy"), c_init_np)
     with open(os.path.join(args.out_dir, "loss_hist.txt"), "w") as f:
         f.write("\n".join(map(str, loss_hist)))
     with open(os.path.join(args.out_dir, "policy_diagnostics.txt"), "w") as f:
@@ -941,6 +1526,44 @@ def main():
                 "ir=%d r=%.6f R2_linear=%.8f mean_abs_d2=%.8e p95_abs_d2=%.8e\n"
                 % (ir_v, r_grid_np[ir_v], r2, mean_abs_d2, p95_abs_d2)
             )
+    with open(os.path.join(args.out_dir, "policy_change_summary.txt"), "w") as f:
+        f.write("mean_abs=%.8e\n" % policy_change["mean_abs"])
+        f.write("median_abs=%.8e\n" % policy_change["median_abs"])
+        f.write("p90_abs=%.8e\n" % policy_change["p90_abs"])
+        f.write("p99_abs=%.8e\n" % policy_change["p99_abs"])
+        f.write("mean_rel=%.8e\n" % policy_change["mean_rel"])
+        f.write("median_rel=%.8e\n" % policy_change["median_rel"])
+        f.write("p90_rel=%.8e\n" % policy_change["p90_rel"])
+        f.write("p99_rel=%.8e\n" % policy_change["p99_rel"])
+        f.write("share_abs_le_1e-4=%.8f\n" % policy_change["share_abs_le_1e-4"])
+        f.write("share_abs_le_1e-3=%.8f\n" % policy_change["share_abs_le_1e-3"])
+        f.write("share_abs_le_1e-2=%.8f\n" % policy_change["share_abs_le_1e-2"])
+        f.write("share_abs_le_5e-2=%.8f\n" % policy_change["share_abs_le_5e-2"])
+        f.write("share_abs_le_1e-1=%.8f\n" % policy_change["share_abs_le_1e-1"])
+        f.write("share_b_mean_abs_le_1e-2=%.8f\n" % policy_change["share_b_mean_abs_le_1e-2"])
+        f.write("mean_abs_change_b_le_2=%.8e\n" % policy_change["mass_change_b_le_2"])
+        f.write("mean_abs_change_b_2_10=%.8e\n" % policy_change["mass_change_b_2_10"])
+        f.write("mean_abs_change_b_gt_10=%.8e\n" % policy_change["mass_change_b_gt_10"])
+    with open(os.path.join(args.out_dir, "validation_summary.txt"), "w") as f:
+        f.write("is_valid=%d\n" % int(validity["is_valid"]))
+        f.write("residual_tol=%.8e\n" % validity["residual_tol"])
+        f.write("diag_mean_residual=%.8e\n" % validity["mean_residual"])
+        f.write("diag_max_abs_residual=%.8e\n" % validity["max_abs_residual"])
+        f.write("touches_lower_bound=%d\n" % int(validity["touches_lower_bound"]))
+        f.write("touches_upper_bound=%d\n" % int(validity["touches_upper_bound"]))
+        f.write("steady_state_r=%s\n" % ("nan" if validity["steady_state_r"] is None else "%.8f" % validity["steady_state_r"]))
+        f.write("steady_state_residual=%s\n" % ("nan" if validity["steady_state_residual"] is None else "%.8e" % validity["steady_state_residual"]))
+        f.write("steady_state_touches_lower=%d\n" % int(validity["steady_state_touches_lower"]))
+        f.write("steady_state_touches_upper=%d\n" % int(validity["steady_state_touches_upper"]))
+    print(
+        "Validity: %s (diag max_abs_residual=%.3e, touches_upper=%s)"
+        % (
+            "VALID" if validity["is_valid"] else "INVALID",
+            validity["max_abs_residual"],
+            validity["touches_upper_bound"] or validity["steady_state_touches_upper"],
+        ),
+        flush=True,
+    )
     print("Saved %s (c_grid, grids, loss_hist.txt)" % args.out_dir, flush=True)
 
 

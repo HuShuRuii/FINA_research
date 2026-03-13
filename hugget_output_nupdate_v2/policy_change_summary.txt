@@ -1,0 +1,17 @@
+mean_abs=1.30277090e-02
+median_abs=0.00000000e+00
+p90_abs=0.00000000e+00
+p99_abs=3.88967571e-01
+mean_rel=5.33761922e-03
+median_rel=0.00000000e+00
+p90_rel=0.00000000e+00
+p99_rel=2.16967893e-02
+share_abs_le_1e-4=0.95012778
+share_abs_le_1e-3=0.95021389
+share_abs_le_1e-2=0.95101111
+share_abs_le_5e-2=0.95564167
+share_abs_le_1e-1=0.96047500
+share_b_mean_abs_le_1e-2=0.32500000
+mean_abs_change_b_le_2=6.50896365e-03
+mean_abs_change_b_2_10=1.40075739e-02
+mean_abs_change_b_gt_10=1.33324796e-02
